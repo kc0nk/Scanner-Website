@@ -2211,7 +2211,7 @@ class MainWindow(QMainWindow):
             f"Scan completed — {len(results)} module(s) executed."
         )
         self._append_exploit_output("")
-        self._append_exploit_output("[+] Exploitation run complete")
+        self._append_exploit_output("[+] Vulnerability scan complete")
         payloads = artifacts.get("payloads.summary", {}) if isinstance(artifacts, dict) else {}
         if payloads:
             total = sum(int(v) for v in payloads.values())
@@ -2229,7 +2229,7 @@ class MainWindow(QMainWindow):
         if findings:
             first = findings[0]
             self._add_finding(first.get("url", ""), first.get("payload", ""), first.get("vulnerability", ""), first.get("response", ""), first.get("request_raw", ""))
-        self._append_terminal_line("[+] Exploitation run complete")
+        self._append_terminal_line("[+] Vulnerability scan complete")
 
     @Slot()
     def _exploit_worker_finished(self):

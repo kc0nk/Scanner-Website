@@ -63,14 +63,14 @@ class ExploitEngine:
                     for line in result.evidence.splitlines()[:8]:
                         self.logger("    " + line)
 
-                # Continue through every implemented module even after flags.
+                # Continue through every implemented module after findings.
                 if self.ctx.artifacts.get("http.rate_limited"):
                     self.logger("[!] Rate limit observed; remaining modules continue with bounded backoff.")
 
             findings = self.ctx.artifacts.get("findings.detected", []) or []
             self.logger(f"[+] All modules completed: {len(results)}/{total_modules}")
             self.logger(f"[+] Vulnerability findings: {len(findings)}")
-            self.logger("[+] Exploitation run complete")
+            self.logger("[+] Vulnerability scan complete")
             return results, self.ctx.artifacts.all()
         finally:
             await self.ctx.close()
