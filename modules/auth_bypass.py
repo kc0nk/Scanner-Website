@@ -10,6 +10,10 @@ class AuthBypassModule(ExploitModule):
         evidence=[]; probes=get_payloads(self.name)
         for endpoint in ctx.artifacts.get("recon.endpoints",[])[:60]:
             p=urlsplit(endpoint);params=parse_qsl(p.query,keep_blank_values=True)
+            try:
+                baseline = await ctx.http.request("GET", endpoint)
+            except Exception:
+                baseline = None
             for idx,(name,_) in enumerate(params):
                 if name.lower() not in self.PARAMS: continue
                 for i,payload in enumerate(probes,1):
@@ -19,5 +23,9 @@ class AuthBypassModule(ExploitModule):
                         r=await ctx.http.request("GET",probe)
                         ctx.inspect_source(str(r.url),r.text,payload,i,r.headers.get("content-type",""))
                         evidence.append(f"{probe} -> {r.status_code}, {len(r.text)} bytes")
+                        low=r.text.lower()
+                        if (r.status_code == 200 and baseline is not None and r.status_code != baseline.status_code) or any(x in low for x in ("admin panel", "administrator", "is_admin")):
+                            ctx.add_finding(probe, payload, self.name, f"HTTP {r.status_code}; privileged/authentication markers observed", confidence="medium")
+                            return ExploitResult(self.name, "signal", "Potential authentication bypass evidence observed", evidence=probe)
                     except Exception as exc:evidence.append(str(exc))
         return ExploitResult(self.name,"no-signal","Auth-bypass probes completed",evidence="\n".join(evidence[:20]))

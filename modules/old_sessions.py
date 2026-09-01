@@ -216,14 +216,12 @@ class OldSessionsModule(ExploitModule):
             admin_token = self._extract_admin_session(str(response.json()) if "application/json" in response.headers.get("content-type", "") else "")
 
         if not admin_token:
-            flags = ctx.scan_flags(response.text)
             return ExploitResult(
                 self.name,
-                "success" if flags else "no-signal",
+                "no-signal",
                 "Session endpoint accessed but no exposed admin session token found",
                 artifacts=[Artifact("session.endpoint", path or "unknown", self.name)],
                 evidence="\n".join(evidence),
-                flags=flags,
             )
 
         preview = admin_token[:10] + "..." if len(admin_token) > 10 else admin_token
@@ -251,7 +249,6 @@ class OldSessionsModule(ExploitModule):
             )
 
         evidence.append(f"Admin session replay -> {admin_response.status_code}, {len(admin_response.text)} bytes")
-        flags = ctx.scan_flags(admin_response.text)
         artifacts = [
             Artifact("session.admin_token", admin_token, self.name),
             Artifact("session.admin_status", admin_response.status_code, self.name),
@@ -260,22 +257,14 @@ class OldSessionsModule(ExploitModule):
         ctx.artifacts.set("session.admin_token", admin_token)
         ctx.artifacts.set("session.admin_status", admin_response.status_code)
 
-        if flags:
-            return ExploitResult(
-                self.name,
-                "success",
-                "Recovered exposed admin session and found the flag",
-                artifacts=artifacts,
-                evidence="\n".join(evidence),
-                flags=flags,
-            )
-
         lower = admin_response.text.lower()
         auth_signal = "welcome admin" in lower or "<em>admin</em>" in lower or "username=admin" in lower
         status = "signal" if auth_signal else "no-signal"
+        if auth_signal:
+            ctx.add_finding(origin + "/", f"session={admin_token}", self.name, f"HTTP {admin_response.status_code}; authenticated admin marker observed", confidence="high")
         message = (
             "Recovered admin session; authenticated response detected"
             if auth_signal
-            else "Recovered admin session but no flag/auth marker detected"
+            else "Recovered admin session but no authenticated marker detected"
         )
         return ExploitResult(self.name, status, message, artifacts=artifacts, evidence="\n".join(evidence))

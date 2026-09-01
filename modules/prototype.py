@@ -16,5 +16,9 @@ class PrototypePollutionModule(ExploitModule):
                 try:
                     r=await ctx.http.request("POST",action,headers={"Content-Type":"application/json"},content=body,use_curl=False,follow_redirects=False)
                     evidence.append(f"{action} -> {r.status_code}, {len(r.text)} bytes")
+                    low=r.text.lower()
+                    if "ctf_probe" in low or "polluted" in low:
+                        ctx.add_finding(action, payload, self.name, f"HTTP {r.status_code}; prototype-pollution marker observed", confidence="high")
+                        return ExploitResult(self.name, "signal", "Potential prototype pollution marker observed", evidence=action)
                 except Exception as exc:evidence.append(str(exc))
         return ExploitResult(self.name,"no-signal","Prototype-pollution probes completed",evidence="\n".join(evidence[:20]))

@@ -193,7 +193,7 @@ class BrowserWorker(QThread):
         self.request_recorded.emit(item)
         self.network_event.emit(f"[net] {request.method} {request.url}")
     async def _record_response(self, response):
-        headers = response.headers or {}
+        headers = dict(response.headers or {})
         content_type = headers.get("content-type", "")
         content_length = headers.get("content-length", "")
         length = content_length
@@ -439,19 +439,20 @@ class BrowserWorker(QThread):
     def close_browser(self):
         """Request browser shutdown without blocking the Qt GUI thread."""
         self._closing = True
-        if not self.loop or not self.loop.is_running():
+        loop = self.loop
+        if not loop or not loop.is_running():
             return
         async def _close_async():
-            try:
-                pending = list(self._pending_intercepts.values())
-                for _route, future in pending:
+            pending = list(self._pending_intercepts.values())
+            for _route, future in pending:
+                try:
                     if not future.done():
                         future.set_result(("forward", None))
-                self._pending_intercepts.clear()
-            except Exception:
-                pass
+                except Exception:
+                    pass
+            self._pending_intercepts.clear()
         try:
-            asyncio.run_coroutine_threadsafe(_close_async(), self.loop)
+            asyncio.run_coroutine_threadsafe(_close_async(), loop)
         except Exception:
             pass
 
@@ -483,6 +484,7 @@ class MainWindow(QMainWindow):
         self._shutdown_requested = False
         self._shutdown_timer = None
         self._shutdown_deadline = None
+        self._signal_shutdown_requested = False
         try:
             config_path = Path.home() / ".ctf-exploit-workbench.json"
             if config_path.exists():
@@ -548,7 +550,7 @@ class MainWindow(QMainWindow):
         self.nav_dashboard.setChecked(True)
 
         side_layout.addStretch()
-        self.version = QLabel("WORKBENCH // v3.23.0")
+        self.version = QLabel("WORKBENCH // v3.27.0")
         self.version.setObjectName("version_label")
         side_layout.addWidget(self.version)
         shell.addWidget(self.sidebar)
@@ -1197,10 +1199,24 @@ class MainWindow(QMainWindow):
         for c, v in enumerate(vals):
             item = QTableWidgetItem(v)
             self.findings_table.setItem(row, c, item)
+        # Keep the complete request snapshot attached to the row.  Non-RCE
+        # findings are promoted directly into a new Repeater tab; RCE is routed
+        # only to Terminal and is never auto-executed.
         self.findings_table.item(row, 5).setData(Qt.ItemDataRole.UserRole, repeater_raw or "")
+        is_rce = any(x in str(vuln).lower() for x in ("rce", "command injection", "remote code execution"))
+        self.findings_table.item(row, 5).setText("TERMINAL" if is_rce else "REPEATER")
         self.findings_table.selectRow(0)
         self.findings_table.scrollToTop()
         self.scan_terminal_hint.setText("1 finding shown • additional signals kept in terminal")
+        if not is_rce:
+            # Auto-promote the concrete scanner result into a fresh Repeater tab.
+            # The request/payload are preserved so it can be replayed and edited.
+            finding = {
+                "index": 1, "url": str(url or ""), "payload": str(payload or ""),
+                "vulnerability": str(vuln or ""), "response": str(response or ""),
+                "raw": str(repeater_raw or ""),
+            }
+            self._send_finding_to_repeater(finding)
 
     def _finding_row_data(self, row):
         if row < 0:
@@ -1247,7 +1263,7 @@ class MainWindow(QMainWindow):
         vuln = finding["vulnerability"].lower()
         is_rce = "rce" in vuln or "command injection" in vuln or "remote code execution" in vuln
 
-        primary = menu.addAction("Open in Terminal" if is_rce else "Send to Repeater")
+        primary = menu.addAction("Open in Terminal" if is_rce else "Open in Repeater")
         repeater = menu.addAction("Send to Repeater") if is_rce else None
         menu.addSeparator()
         copy_url = menu.addAction("Copy URL")
@@ -2244,7 +2260,8 @@ class MainWindow(QMainWindow):
         self.scan_terminal_hint.setText("Scan failed")
         self._append_exploit_output(f"[ERROR] {error}")
         self.log(f"[ERROR] {error}")
-        QMessageBox.critical(self, "Error", error)
+        if not getattr(self, "_shutdown_requested", False):
+            QMessageBox.critical(self, "Error", error)
 
     def closeEvent(self, event):
         """Graceful, non-blocking shutdown for GUI workers.
@@ -2302,7 +2319,7 @@ class MainWindow(QMainWindow):
 
         self._shutdown_deadline = QTimer(self)
         self._shutdown_deadline.setSingleShot(True)
-        self._shutdown_deadline.setInterval(20000)
+        self._shutdown_deadline.setInterval(10000)
         self._shutdown_deadline.timeout.connect(self._shutdown_timeout)
         self._shutdown_deadline.start()
         event.ignore()

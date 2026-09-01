@@ -23,7 +23,9 @@ class FileUploadModule(ExploitModule):
                     resp=await ctx.http.request("POST",action,headers={"Content-Type":"application/octet-stream","X-Filename":filename},content=body,use_curl=False)
                     ctx.inspect_source(str(resp.url),resp.text,filename,i,resp.headers.get("content-type",""))
                     evidence.append(f"{action} [{filename}] -> {resp.status_code}, {len(resp.text)} bytes")
-                    flags=ctx.scan_flags(resp.text)
-                    if flags:return ExploitResult(self.name,"success","Flag found during upload probe",flags=flags,evidence=action)
+                    low = resp.text.lower()
+                    if resp.status_code in (200,201,202,204) and filename.lower().endswith((".php;.jpg", ".jpg.php", ".php%00.jpg")):
+                        ctx.add_finding(action, filename, self.name, f"HTTP {resp.status_code}; suspicious upload filename accepted", confidence="medium")
+                        return ExploitResult(self.name, "signal", "Potential unrestricted/suspicious file upload behavior observed", evidence=action)
                 except Exception as exc:evidence.append(str(exc))
         return ExploitResult(self.name,"signal" if evidence else "no-signal","File upload probes completed",evidence="\n".join(evidence[:20]))

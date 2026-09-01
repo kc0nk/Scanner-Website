@@ -22,8 +22,6 @@ class ReconModule(ExploitModule):
                 if url==ctx.session.current_url and ctx.session.page_html: text,final,status=ctx.session.page_html,url,200
                 else: text,final,status=await ctx.get_text(url)
                 ctx.inspect_source(final, text, payload="PASSIVE-CTRL-U", payload_index=0, content_type="text/html")
-                flags=ctx.scan_flags(text)
-                if flags: evidence.append(f'FLAG on {final}')
                 evidence.append(f'{final} -> {status}')
                 if status>=500: continue
                 for link in ctx.discover_links(final,text):
@@ -49,5 +47,4 @@ class ReconModule(ExploitModule):
                 upload_forms.append(form)
         if upload_forms:
             ctx.artifacts.set('recon.upload_endpoints', [f.get('action') for f in upload_forms])
-        flags=ctx.artifacts.get('flags.found',[]) or []
-        return ExploitResult(self.name,'success' if flags else 'ok',f'Discovered {len(endpoints)} endpoint(s), {len(uniq)} form(s), {len(pages)} page(s)',[Artifact('recon.endpoints',endpoints,self.name),Artifact('recon.forms',uniq,self.name),Artifact('recon.pages_seen',pages,self.name)],'\n'.join(evidence[:35]),flags=flags)
+        return ExploitResult(self.name,'ok',f'Discovered {len(endpoints)} endpoint(s), {len(uniq)} form(s), {len(pages)} page(s)',[Artifact('recon.endpoints',endpoints,self.name),Artifact('recon.forms',uniq,self.name),Artifact('recon.pages_seen',pages,self.name)],'\n'.join(evidence[:35]))

