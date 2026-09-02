@@ -41,8 +41,13 @@ class SQLiModule(ExploitModule):
                     mutated[idx] = (name, value + payload)
                     probe = urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(mutated), parts.fragment))
                     try:
-                        normal = await ctx.http.request(method, candidate, headers=req_headers, content=req_body)
-                        test = await ctx.http.request(method, probe, headers=req_headers, content=req_body)
+                        original = ctx.original_request_for(method, candidate)
+                        if req_headers:
+                            original["headers"] = dict(req_headers)
+                        if req_body is not None:
+                            original["body"] = req_body
+                        normal = await ctx.request_original(original, url=candidate, method=method, headers=req_headers, body=req_body)
+                        test = await ctx.request_original(original, url=probe, method=method, headers=req_headers, body=req_body)
                         delta = len(test.text) - len(normal.text)
                         ctx.inspect_source(str(test.url), test.text, payload, payload_counter, test.headers.get("content-type", ""))
                         marker = any(x in test.text.lower() for x in ["sql syntax", "mysql", "sqlite", "postgresql", "odbc", "ora-"])

@@ -29,8 +29,15 @@ class CSRFModule(ExploitModule):
             fields = [(str(x.get("name")), str(x.get("value", ""))) for x in inputs if x.get("name")]
             token_fields = [name for name, _ in fields if any(k in name.lower() for k in ("csrf", "xsrf", "token", "nonce"))]
             base_data = dict(fields)
+            original = ctx.original_request_for(method, action)
+            original_headers = dict(original.get("headers") or {})
+            original_headers.setdefault("Content-Type", "application/x-www-form-urlencoded")
+            original_body = original.get("body", "") or urlencode(base_data)
             try:
-                baseline = await ctx.http.request(method, action, headers={"Content-Type": "application/x-www-form-urlencoded"}, content=urlencode(base_data), follow_redirects=False)
+                baseline = await ctx.request_original(
+                    original, url=action, method=method,
+                    headers=original_headers, body=original_body, follow_redirects=False
+                )
             except Exception as exc:
                 evidence.append(f"baseline {action}: {exc}")
                 continue
@@ -50,7 +57,13 @@ class CSRFModule(ExploitModule):
                     for name in token_fields:
                         data.pop(name, None)
                 try:
-                    test = await ctx.http.request(method, action, headers=headers, content=urlencode(data), follow_redirects=False)
+                    # Preserve the captured request and only mutate the CSRF
+                    # controls/body for this probe.
+                    probe_body = urlencode(data)
+                    test = await ctx.request_original(
+                        original, url=action, method=method,
+                        headers={**original_headers, **headers}, body=probe_body, follow_redirects=False
+                    )
                     evidence.append(f"{action} [{probe}] -> {test.status_code}, {len(test.text)} bytes")
                     same_status = test.status_code == baseline.status_code
                     small_delta = abs(len(test.text) - len(baseline.text)) <= max(80, int(len(baseline.text) * 0.10))

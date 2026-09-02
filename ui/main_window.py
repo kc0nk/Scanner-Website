@@ -84,7 +84,7 @@ class CtfSyntaxHighlighter(QSyntaxHighlighter):
             return
         if not text.strip(): return
         for mat in re.finditer(r"https?://[^\s'\"]+", text): self.setFormat(mat.start(),len(mat.group(0)),self.formats["url"])
-        for mat in re.finditer(r"\b(?:true|false|null|GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD)\b", text): self.setFormat(mat.start(),len(mat.group(0)),self.formats["keyword"])
+        for mat in re.finditer(r"\b(?:true|false|null|GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD|TRACE|CONNECT)\b", text): self.setFormat(mat.start(),len(mat.group(0)),self.formats["keyword"])
         for mat in re.finditer(r"\b\d+(?:\.\d+)?\b", text): self.setFormat(mat.start(),len(mat.group(0)),self.formats["number"])
 
     def _highlight_json(self, text):
@@ -549,9 +549,6 @@ class MainWindow(QMainWindow):
         self.nav_dashboard.setChecked(True)
 
         side_layout.addStretch()
-        self.version = QLabel("WORKBENCH // v3.27.0")
-        self.version.setObjectName("version_label")
-        side_layout.addWidget(self.version)
         shell.addWidget(self.sidebar)
         self.sidebar_collapsed = False
 
@@ -577,7 +574,6 @@ class MainWindow(QMainWindow):
             QWidget#sidebar { background: #0a0e13; border-right: 1px solid #1f2935; }
             QLabel#brand { color: #f5f7fa; letter-spacing: 1px; }
             QLabel#sidebar_subtitle { color: #657285; font-size: 10px; font-weight: bold; letter-spacing: 1px; }
-            QLabel#version_label { color: #4e5b6c; font-size: 10px; }
             QPushButton#nav_button {
                 background: transparent;
                 color: #7f8b9d;
@@ -613,8 +609,6 @@ class MainWindow(QMainWindow):
             QPushButton#exploit_button { background: #b64a22; border-radius: 8px; padding: 14px 22px; min-height: 32px; font-size: 15px; font-weight: 800; }
             QPushButton#exploit_button:hover { background: #d45c2b; }
             QPushButton#exploit_button:pressed { background: #963d1d; }
-            QPushButton#flag_save_button { background: #1768a8; border-radius: 8px; padding: 8px 14px; font-size: 12px; font-weight: 800; }
-            QPushButton#flag_save_button:hover { background: #2490d6; }
             QPlainTextEdit#http_editor { background: #080d13; border: 1px solid #263344; border-radius: 8px; color: #d7e0ea; font-family: monospace; font-size: 13px; padding: 12px; }
             QTableWidget#intruder_table { background: #0b1016; alternate-background-color: #0e141b; gridline-color: #1d2732; border: 1px solid #202b39; border-radius: 8px; color: #d6dee8; selection-background-color: #16324a; }
             QLabel#panel_label { color: #91a0b3; font-size: 12px; font-weight: 700; }
@@ -1039,11 +1033,6 @@ class MainWindow(QMainWindow):
     def _append_terminal_line(self, text):
         if hasattr(self, "terminal_view"):
             self.terminal_view.appendPlainText(text)
-
-    def _save_flag_format(self):
-        # Legacy UI hook retained for compatibility. Scanner no longer has a
-        # flag configuration because flag extraction is intentionally disabled.
-        self._append_terminal_line("[config] Scanner flag extraction is disabled; inspect raw responses in Repeater")
 
     def _build_terminal_page(self):
         """Dedicated terminal UI; exploitation logs are mirrored here."""
@@ -1911,7 +1900,6 @@ class MainWindow(QMainWindow):
             self.brand.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self.brand.setFont(QFont("Sans Serif", 14, QFont.Weight.Bold))
             self.subtitle.hide()
-            self.version.hide()
             self.nav_dashboard.setText("⌂")
             self.nav_terminal.setText(">_")
             self.nav_exploitation.setText("⚡")
@@ -1931,7 +1919,6 @@ class MainWindow(QMainWindow):
             self.brand.setAlignment(Qt.AlignmentFlag.AlignLeft)
             self.brand.setFont(QFont("Sans Serif", 17, QFont.Weight.Bold))
             self.subtitle.show()
-            self.version.show()
             self.nav_dashboard.setText("⌂   Dashboard")
             self.nav_terminal.setText(">_  Terminal")
             self.nav_exploitation.setText("⚡  Scanner")
@@ -2261,7 +2248,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         """Graceful, non-blocking shutdown for GUI workers.
 
-        Never call wait(), terminate(), or flag/UI processing from closeEvent.
+        Never call wait(), terminate(), or worker/UI processing from closeEvent.
         The Qt event loop stays alive while workers finish, preventing
         QThread-destroyed-while-running and KeyboardInterrupt-in-closeEvent.
         """
@@ -2346,4 +2333,3 @@ class MainWindow(QMainWindow):
         app = QApplication.instance()
         if app is not None:
             app.quit()
-

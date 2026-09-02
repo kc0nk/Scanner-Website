@@ -10,11 +10,17 @@ from core.payloads import PAYLOAD_CATALOG, WRITEUP_DERIVED_PAYLOADS, payload_sum
 class ExploitContext:
     def __init__(self,target:Target,session:SessionSnapshot,logger):
         self.target=target; self.session=session; self.logger=logger; self.artifacts=ArtifactStore(); self.http=SessionHttpClient(session, logger=logger)
+        # Every scanner transport call automatically resolves the closest captured
+        # browser request unless the module explicitly supplies its own context.
+        # This makes FULL ORIGINAL REQUEST the default, not an opt-in.
+        self.http.original_request_resolver = lambda method, url: self.original_request_for(method, url)
         self.artifacts.set("payloads.catalog", PAYLOAD_CATALOG)
         self.artifacts.set("payloads.summary", payload_summary())
         self.artifacts.set("payloads.total", total_payloads())
         self.artifacts.set("payloads.writeup_derived", WRITEUP_DERIVED_PAYLOADS)
         self.artifacts.set("payloads.writeup_summary", writeup_payload_summary())
+        self.artifacts.set("scanner.payload_mode", "FULL ORIGINAL REQUEST")
+        self.artifacts.set("scanner.payload_coverage", {})
         for k,v in {
             "session.cookies":session.cookies,"session.local_storage":session.local_storage,
             "browser.current_url":session.current_url,"browser.navigation_history":session.navigation_history,
@@ -53,6 +59,120 @@ class ExploitContext:
             rows.append({"method":method,"url":url,"headers":{},"body":"","body_fields":fields,"resource_type":"form","source":"form"})
         return rows
 
+    def original_request_for(self, method, url):
+        """Return the closest captured browser request for a probe target.
+
+        Scanner probes should mutate the captured request rather than inventing
+        a new minimal GET. Exact method+URL matches win; a same-method/path
+        match is used as a fallback. The returned dictionary is copied so a
+        payload mutation can never alter browser history.
+        """
+        method = str(method or "GET").upper()
+        url = str(url or "")
+        rows = self.artifacts.get("recon.requests", []) or self.request_corpus()
+        exact = None
+        same_path = None
+        try:
+            target = urlparse(url)
+        except Exception:
+            target = None
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            rm = str(row.get("method") or "GET").upper()
+            ru = str(row.get("url") or "")
+            if rm != method:
+                continue
+            if ru == url:
+                exact = row
+                break
+            if target:
+                try:
+                    rp = urlparse(ru)
+                    if rp.netloc == target.netloc and rp.path == target.path and same_path is None:
+                        same_path = row
+                except Exception:
+                    pass
+        source = exact or same_path
+        if not source:
+            return {"method": method, "url": url, "headers": {}, "body": "", "source": "scanner-fallback"}
+        return {
+            "method": str(source.get("method") or method).upper(),
+            "url": str(source.get("url") or url),
+            "headers": dict(source.get("headers") or {}),
+            "body": source.get("body", source.get("post_data", "")) or "",
+            "cookies": source.get("cookies", ""),
+            "raw": source.get("raw") or source.get("raw_request") or "",
+            "resource_type": source.get("resource_type", ""),
+            "source": source.get("source", "browser"),
+        }
+
+    async def request_original(self, original, *, url=None, method=None, headers=None, body=None, **kwargs):
+        """Send a scanner probe using the FULL ORIGINAL REQUEST context.
+
+        Captured browser headers/cookies/body are retained. Explicit headers or
+        body are treated only as payload mutations/overrides. This is the
+        scanner equivalent of editing a Burp-style request while preserving
+        the rest of the original request.
+        """
+        original = dict(original or {})
+        req_method = str(method or original.get("method") or "GET").upper()
+        req_url = str(url or original.get("url") or self.target.url)
+        effective_headers = dict(original.get("headers") or {})
+        effective_headers.update(dict(headers or {}))
+        req_body = original.get("body", original.get("post_data", "")) if body is None else body
+        return await self.http.request(
+            req_method,
+            req_url,
+            headers=effective_headers,
+            content=req_body if req_body not in (None, "") else None,
+            original_request=original,
+            **kwargs,
+        )
+
+    def mark_payload(self, module: str, payload: str, status: str = "tested", detail: str = "", *, executed: bool = True):
+        """Record per-payload terminal state so the UI/engine can prove coverage.
+
+        status is one of tested, finding, error, or not-applicable. A payload is
+        never silently dropped: modules should mark it even when no suitable
+        injection surface exists.
+        """
+        coverage = self.artifacts.get("scanner.payload_coverage", {}) or {}
+        bucket = coverage.setdefault(str(module), [])
+        row = {"payload": str(payload), "status": str(status), "detail": str(detail or ""), "executed": bool(executed)}
+        # Last state wins for the same module/payload.
+        for i, old in enumerate(bucket):
+            if isinstance(old, dict) and old.get("payload") == row["payload"]:
+                bucket[i] = row
+                break
+        else:
+            bucket.append(row)
+        self.artifacts.set("scanner.payload_coverage", coverage)
+        return row
+
+    def payload_catalog_for_module(self, module: str):
+        """Return the canonical payload list associated with a module name."""
+        from core.payloads import get_payloads
+        return list(get_payloads(module) or [])
+
+    def finalize_payload_coverage(self, module: str):
+        """Close the ledger for a module without pretending skipped probes ran.
+
+        Existing modules explicitly mark payloads when they execute them. Any
+        catalog entry left unmarked is recorded as not-applicable/unknown rather
+        than silently counted as tested. This makes coverage auditable.
+        """
+        expected = self.payload_catalog_for_module(module)
+        coverage = self.artifacts.get("scanner.payload_coverage", {}) or {}
+        bucket = coverage.setdefault(str(module), [])
+        marked = {str(x.get("payload")): x for x in bucket if isinstance(x, dict)}
+        for payload in expected:
+            key = str(payload)
+            if key not in marked:
+                bucket.append({"payload": key, "status": "not-observed", "detail": "module completed without an explicit execution marker for this catalog entry", "executed": False})
+        self.artifacts.set("scanner.payload_coverage", coverage)
+        return bucket
+
     def add_finding(self, url, payload, vulnerability, response, *, confidence="medium", terminal_ready=False, request_raw=""):
         """Record a concrete finding and retain the exact request snapshot for replay.
 
@@ -65,6 +185,7 @@ class ExploitContext:
             snap = getattr(self.http, "last_request_snapshot", None)
             if isinstance(snap, dict):
                 request_raw = snap.get("raw", "")
+        snap = getattr(self.http, "last_request_snapshot", None)
         finding = {
             "url": str(url or ""),
             "payload": str(payload or ""),
@@ -73,6 +194,10 @@ class ExploitContext:
             "confidence": str(confidence or "medium"),
             "terminal_ready": bool(terminal_ready),
             "request_raw": str(request_raw or ""),
+            "request_method": str((snap or {}).get("method") or "GET"),
+            "request_headers": dict((snap or {}).get("headers") or {}),
+            "request_body": (snap or {}).get("body", b""),
+            "request_mode": "FULL ORIGINAL REQUEST" if snap else "fallback",
         }
         findings = self.artifacts.get("findings.detected", []) or []
         # Stable de-duplication by URL/vuln/payload.

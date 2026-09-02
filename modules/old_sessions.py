@@ -108,10 +108,10 @@ class OldSessionsModule(ExploitModule):
             ctx.inspect_source(str(response.url), response.text, path, payload_index, response.headers.get("content-type", ""))
             evidence.append(f"{path} -> {response.status_code}, {len(response.text)} bytes")
             last_response = response
-            if response.status_code < 300:
-                return response, path
-            # A known session endpoint returning an auth redirect is still
-            # useful evidence; keep looking at the alternate paths.
+            # Do not stop on the first accessible endpoint. Every session-path
+            # payload must reach a terminal state before this probe pack ends.
+        if last_response is not None and last_response.status_code < 300:
+            return last_response, "multiple-tested"
         return last_response, None
 
     async def _reuse_historical_login(self, ctx, origin: str, evidence: list[str]):

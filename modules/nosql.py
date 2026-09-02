@@ -1,6 +1,6 @@
 from __future__ import annotations
 import json
-from urllib.parse import urlsplit,parse_qsl,urlencode,urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from core.module import ExploitModule
 from core.models import ExploitResult
 from core.payloads import get_payloads

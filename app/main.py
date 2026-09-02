@@ -5,11 +5,12 @@ import signal
 from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import QTimer
 from ui.main_window import MainWindow
+from app.version import __version__
 
 
 def main():
     app = QApplication(sys.argv)
-    app.setApplicationName("CTF Exploit Workbench v3.40")
+    app.setApplicationName(f"CTF Exploit Workbench v{__version__}")
     window = MainWindow()
     window.show()
 

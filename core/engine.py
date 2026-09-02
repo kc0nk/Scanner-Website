@@ -72,6 +72,7 @@ class ExploitEngine:
         try:
             self.logger("[>] Preparing browser/session transport")
             self.logger("[i] Module timeout: 180s each; a finding NEVER stops the scanner")
+            self.logger("[i] Payload mode: FULL ORIGINAL REQUEST — captured method/headers/cookies/body are preserved for probes")
             self.logger("[i] Cleanup timeout: 5s; completion is reported even if browser cleanup stalls")
             try:
                 await asyncio.wait_for(self.ctx.http.prime_browser_session(), timeout=20.0)
@@ -103,6 +104,9 @@ class ExploitEngine:
                 except Exception as exc:
                     result = ExploitResult(module_name, "error", str(exc))
 
+                # Reconcile the module ledger before advancing. This never turns a
+                # finding into a stop condition; it only makes payload coverage auditable.
+                module_coverage = self.ctx.finalize_payload_coverage(module_name)
                 results.append(result)
                 finding_count = len(self.ctx.artifacts.get("findings.detected", []) or [])
                 self.logger(f"[{result.status}] {result.message}")
@@ -115,11 +119,23 @@ class ExploitEngine:
                 # Continue through every implemented module after findings.
                 if self.ctx.artifacts.get("http.rate_limited"):
                     self.logger("[!] Rate limit observed; remaining modules continue with bounded backoff.")
+                # Explicit terminal-state heartbeat: the engine only advances
+                # after this module returned, so a finding can never masquerade
+                # as scan completion.
+                self.logger(f"[complete] {module_name} reached terminal state: {result.status}")
 
             findings = self.ctx.artifacts.get("findings.detected", []) or []
+            coverage = self.ctx.artifacts.get("scanner.payload_coverage", {}) or {}
+            catalog = self.ctx.artifacts.get("payloads.catalog", {}) or {}
             self.logger(f"[+] All modules completed: {len(results)}/{total_modules}")
             self.logger(f"[+] Vulnerability findings: {len(findings)}")
-            self.logger("[i] Flag extraction: disabled in Scanner; raw responses remain available in Repeater")
+            self.logger(f"[+] Payload catalog loaded: {sum(len(v) for v in catalog.values())} payload(s) across {len(catalog)} packs")
+            if coverage:
+                covered = sum(len(v) for v in coverage.values() if isinstance(v, list))
+                executed = sum(1 for v in coverage.values() if isinstance(v, list) for row in v if isinstance(row, dict) and row.get("executed"))
+                not_observed = sum(1 for v in coverage.values() if isinstance(v, list) for row in v if isinstance(row, dict) and row.get("status") == "not-observed")
+                self.logger(f"[+] Payload execution ledger: {covered} catalog state(s); executed={executed}; not-observed={not_observed}")
+            self.logger("[i] Scanner output is vulnerability-only; raw target responses remain available in Repeater")
             self.logger("[+] Vulnerability scan complete — every selected module reached a terminal state")
             return results, self.ctx.artifacts.all()
         finally:

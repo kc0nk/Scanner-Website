@@ -34,7 +34,8 @@ class XSSModule(ExploitModule):
                     mutated[idx] = (name, payload)
                     probe = urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(mutated), parts.fragment))
                     try:
-                        resp = await ctx.http.request(method, probe, headers=req_headers, content=request.get("body") or None)
+                        original = dict(request)
+                        resp = await ctx.request_original(original, url=probe, method=method, headers=req_headers, body=request.get("body") or None)
                         ctx.inspect_source(str(resp.url), resp.text, payload, payload_counter, resp.headers.get("content-type", ""))
                         if token in resp.text:
                             msg = f"Reflected input detected in {name} at {parts.path} using {payload}"

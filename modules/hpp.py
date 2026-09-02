@@ -11,7 +11,8 @@ class HPPModule(ExploitModule):
             for i,probe in enumerate(probes,1):
                 ctx.logger(f"[payload {i}/{len(probes)}] HTTP Parameter Pollution")
                 try:
-                    r=await ctx.http.request('GET',probe)
+                    original=ctx.original_request_for('GET',endpoint)
+                    r=await ctx.request_original(original,url=probe,method='GET')
                     evidence.append(f"{probe} -> {r.status_code}, {len(r.text)} bytes")
                     if r.status_code in (300,301,302,303,307,308) and r.headers.get("location"):
                         ctx.add_finding(probe, probe.split("?",1)[-1], self.name, f"HTTP {r.status_code}; duplicate parameters altered redirect behavior", confidence="medium")

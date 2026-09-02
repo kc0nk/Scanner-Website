@@ -21,7 +21,8 @@ class SSRFModule(ExploitModule):
                     mutated=params.copy(); mutated[idx]=(name,payload)
                     probe=urlunsplit((p.scheme,p.netloc,p.path,urlencode(mutated),p.fragment))
                     try:
-                        r=await ctx.http.request("GET",probe)
+                        original=ctx.original_request_for("GET",endpoint)
+                        r=await ctx.request_original(original,url=probe,method="GET")
                         ctx.inspect_source(str(r.url),r.text,payload,n,r.headers.get("content-type",""))
                         evidence.append(f"{probe} -> {r.status_code}, {len(r.text)} bytes")
                         low = r.text.lower()

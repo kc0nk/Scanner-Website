@@ -251,6 +251,101 @@ BAPP_REFERENCE_SOURCES = {
 }
 
 
+# Advanced CTF/assessment payload families. These are safe-oriented probes or
+# passive indicators; high-impact desync/state-changing operations are routed
+# to manual confirmation rather than automatically executed.
+ADVANCED_PAYLOADS: dict[str, list[str]] = {
+    "GraphQL": [
+        "{__typename}",
+        "{__schema{queryType{name}}}",
+        "{__schema{types{name}}}",
+        "query{__typename}",
+        "mutation{__typename}",
+        "introspection-query",
+        "alias-batch",
+        "nested-query-depth",
+    ],
+    "Host Header / Reverse Proxy": [
+        "X-Forwarded-Host: attacker.example",
+        "X-Host: attacker.example",
+        "X-Forwarded-Server: attacker.example",
+        "Forwarded: host=attacker.example",
+        "Host: attacker.example",
+    ],
+    "Web Cache / Cache Key": [
+        "X-Forwarded-Host: attacker.example",
+        "X-Original-URL: /cache-probe",
+        "X-Forwarded-Scheme: http",
+        "X-Forwarded-Proto: http",
+        "X-Host: attacker.example",
+    ],
+    "WebSocket": [
+        "Origin validation",
+        "authentication on handshake",
+        "authorization on message",
+        "cross-site WebSocket hijacking",
+        "message parameter reflection",
+    ],
+    "Advanced HTTP / Desync": [
+        "CL.TE",
+        "TE.CL",
+        "TE.TE",
+        "HTTP/2 -> HTTP/1.1",
+        "client-side desync",
+        "duplicate Transfer-Encoding",
+        "header whitespace discrepancy",
+    ],
+    "Business Logic / Workflow": [
+        "coupon|redeem|discount",
+        "quantity|amount|price",
+        "role|permission|admin",
+        "reset|verify|token",
+        "step|state|workflow",
+        "duplicate|reuse|replay",
+        "negative|zero|boundary",
+    ],
+    "API / Mass Assignment": [
+        "role=admin",
+        "is_admin=true",
+        "permissions=admin",
+        "price=0",
+        "discount=100",
+        "verified=true",
+        "approved=true",
+    ],
+    "OAuth / OIDC": [
+        "redirect_uri=https://attacker.example/callback",
+        "response_type=code",
+        "response_mode=query",
+        "state-missing",
+        "nonce-missing",
+        "PKCE-missing",
+    ],
+    "Race Condition": [
+        "parallel-identical-request",
+        "coupon-redeem-race",
+        "password-reset-race",
+        "transaction-race",
+        "TOCTOU",
+    ],
+    "Deserialization": [
+        "PHP serialization marker",
+        "Java serialization marker",
+        "YAML object tag",
+        "Python pickle marker",
+        "JSON polymorphic type field",
+    ],
+    "LDAP / XPath / XML Injection": [
+        "*",
+        "*)(uid=*)",
+        "' or '1'='1",
+        "\"><x>probe</x>",
+        "[1] | [1=1]",
+    ],
+}
+PAYLOAD_CATALOG.update(ADVANCED_PAYLOADS)
+
+
 def get_payloads(name: str) -> list[str]:
     """Return a copy of the payload list for one technique."""
     return list(PAYLOAD_CATALOG.get(name, ()))

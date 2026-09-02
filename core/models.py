@@ -5,8 +5,6 @@ from typing import Any
 @dataclass
 class Target:
     url: str
-    # Kept only for backwards-compatible construction; scanner never reads it.
-    flag_format: str = ""
 
 @dataclass
 class Artifact:
@@ -21,7 +19,6 @@ class ExploitResult:
     message: str
     artifacts: list[Artifact] = field(default_factory=list)
     evidence: str = ""
-    flags: list[str] = field(default_factory=list)
 
 @dataclass
 class SessionSnapshot:

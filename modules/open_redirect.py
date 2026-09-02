@@ -1,5 +1,5 @@
 from __future__ import annotations
-from urllib.parse import parse_qsl,urlsplit,urlencode,urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from core.module import ExploitModule
 from core.models import ExploitResult
 from core.payloads import get_payloads
@@ -16,7 +16,8 @@ class OpenRedirectModule(ExploitModule):
                     ctx.logger(f"[payload {i}/{len(probes)}] Open Redirect: {payload}")
                     m=params.copy();m[idx]=(name,payload);probe=urlunsplit((p.scheme,p.netloc,p.path,urlencode(m),p.fragment))
                     try:
-                        r=await ctx.http.request("GET",probe,follow_redirects=False)
+                        original=ctx.original_request_for("GET",endpoint)
+                        r=await ctx.request_original(original,url=probe,method="GET",follow_redirects=False)
                         evidence.append(f"{probe} -> {r.status_code} location={r.headers.get('location','')}")
                         location = r.headers.get("location","")
                         if location.startswith(("http://example.com","https://example.com","//example.com")):

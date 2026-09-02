@@ -18,12 +18,24 @@ from modules.prototype import PrototypePollutionModule
 from modules.hpp import HPPModule
 from modules.csrf import CSRFModule
 from modules.cors import CORSModule
+from modules.cors_differential import CORSDifferentialModule
+from modules.security_headers import SecurityHeadersModule
 from modules.bypass403 import Bypass403Module
 from modules.backup_files import BackupSensitiveFilesModule
+from modules.graphql import GraphQLModule
+from modules.host_header import HostHeaderModule
+from modules.cache import CacheModule
+from modules.websocket import WebSocketModule
+from modules.advanced_http import AdvancedHTTPModule
+from modules.business_logic import BusinessLogicModule
+from modules.api_mass_assignment import APIMassAssignmentModule
+from modules.advanced_inventory import AdvancedInventoryModule
 
 ALL_MODULES = [
     ReconModule, HTTPMethodsModule, OldSessionsModule, SQLiModule, IDORModule, LFIModule, SSTIModule,
     XSSModule, SSRFModule, XXEModule, RCEModule, FileUploadModule, OpenRedirectModule,
     AuthBypassModule, NoSQLModule, JWTModule, PrototypePollutionModule, HPPModule, CSRFModule,
-    CORSModule, Bypass403Module, BackupSensitiveFilesModule,
+    CORSModule, CORSDifferentialModule, SecurityHeadersModule,
+    Bypass403Module, BackupSensitiveFilesModule, GraphQLModule, HostHeaderModule, CacheModule,
+    WebSocketModule, AdvancedHTTPModule, BusinessLogicModule, APIMassAssignmentModule, AdvancedInventoryModule,
 ]

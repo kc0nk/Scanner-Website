@@ -1,7 +1,7 @@
 from __future__ import annotations
-from urllib.parse import parse_qsl,urlsplit,urlencode,urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from core.module import ExploitModule
-from core.models import ExploitResult, Artifact
+from core.models import Artifact, ExploitResult
 from core.payloads import get_payloads
 
 class RCEModule(ExploitModule):

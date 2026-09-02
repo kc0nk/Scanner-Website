@@ -106,6 +106,7 @@ class SessionHttpClient:
         self._browser_page = None
         self._browser_primed = False
         self.last_request_snapshot = None
+        self.original_request_resolver = None
 
     async def close(self):
         try:
@@ -285,7 +286,7 @@ class SessionHttpClient:
         await self._sync_browser_cookies()
         return httpx.Response(response.status, headers=hdrs, content=body, request=httpx.Request(method,url))
 
-    def _build_request_snapshot(self, method: str, url: str, headers: dict[str, Any] | None, content: Any = None):
+    def _build_request_snapshot(self, method: str, url: str, headers: dict[str, Any] | None, content: Any = None, captured_raw: str | None = None):
         # Preserve browser-like defaults so Scanner -> Repeater gets a faithful
         # replayable request even when a module only supplied URL/body.
         effective = {
@@ -314,6 +315,10 @@ class SessionHttpClient:
         lines = [f"{method.upper()} {target} HTTP/1.1"]
         for key, value in effective.items():
             lines.append(f"{key}: {value}")
+        # Always reconstruct the effective request when a probe may have mutated
+        # URL/body/headers. Reusing captured_raw after a mutation would display a
+        # request that does not match the bytes actually sent. captured_raw is kept
+        # only as provenance metadata for callers; the replay snapshot is canonical.
         raw = "\n".join(lines) + "\n\n"
         try:
             raw += body.decode("utf-8", "replace")
@@ -325,13 +330,39 @@ class SessionHttpClient:
             "headers": effective,
             "body": body,
             "raw": raw,
+            "captured_raw": bool(captured_raw),
+            "original_raw": str(captured_raw or ""),
         }
 
     async def request(self, method: str, url: str, **kwargs: Any):
-        """Send a request while preserving the JavaScript/browser session."""
+        """Send a request while preserving the JavaScript/browser session.
+
+        ``original_request`` is scanner metadata only; its headers/body are
+        already supplied through the normal request arguments and are therefore
+        replayed unchanged except for the requested payload mutation.
+        """
+        explicit_original = kwargs.pop("original_request", None)
         use_curl=bool(kwargs.pop("use_curl", True))
+        # FULL ORIGINAL REQUEST is the default scanner transport policy.
+        # A captured request is used as the base and explicit module headers/body
+        # are merged on top as the payload mutation. This keeps method, cookies,
+        # browser headers and request body intact wherever a captured request exists.
+        if explicit_original is None and callable(self.original_request_resolver):
+            try:
+                resolved = self.original_request_resolver(method, url) or {}
+            except Exception:
+                resolved = {}
+            if resolved:
+                merged_headers = dict(resolved.get("headers") or {})
+                merged_headers.update(dict(kwargs.get("headers") or {}))
+                if "headers" in kwargs or merged_headers:
+                    kwargs["headers"] = merged_headers
+                if kwargs.get("content") is None and resolved.get("body") not in (None, ""):
+                    kwargs["content"] = resolved.get("body")
+                explicit_original = resolved
+        captured_raw = (explicit_original or {}).get("raw") if isinstance(explicit_original, dict) else None
         self.last_request_snapshot = self._build_request_snapshot(
-            method, url, kwargs.get("headers"), kwargs.get("content")
+            method, url, kwargs.get("headers"), kwargs.get("content"), captured_raw=captured_raw
         )
         # Prime once up front. This turns the raw /jwt/?i=1 JS challenge into
         # the real browser session before any scanner payload is sent.
@@ -362,7 +393,7 @@ class SessionHttpClient:
         # cookies may have changed during the request path. Keep the exact headers
         # the module supplied plus the current cookie jar.
         self.last_request_snapshot = self._build_request_snapshot(
-            method, url, kwargs.get("headers"), kwargs.get("content")
+            method, url, kwargs.get("headers"), kwargs.get("content"), captured_raw=captured_raw
         )
         last_response=response
         status=response.status_code

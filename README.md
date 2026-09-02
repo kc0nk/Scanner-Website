@@ -21,3 +21,10 @@ The scanner registry includes JWT, XSS, SQLi, CSRF, CORS, 403 bypass, backup/sen
 - Browser/http cleanup is bounded to 5 seconds so a stalled Playwright shutdown cannot hide a completed scan from the GUI.
 - Backup/Sensitive Files checks all payloads instead of returning on its first hit.
 - The terminal explicitly reports when a finding was recorded and that scanning is continuing.
+
+
+## v3.41 payload coverage
+All payload packs in `core/payloads.py` are now represented by active scanner modules, including Security Headers and CORS / Header Differential. The scanner keeps processing every payload applicable to discovered request surfaces; findings never terminate a payload loop or module. FULL ORIGINAL REQUEST is the default transport policy.
+
+## v3.42 advanced coverage
+The scanner includes additional CTF-oriented technique inventories for GraphQL, host-header/reverse-proxy behavior, cache-key anomalies, WebSocket surfaces, advanced HTTP desync indicators, business-logic workflows, mass assignment, OAuth/OIDC, race conditions, deserialization, and LDAP/XPath/XML injection. High-impact desync/state-changing actions are marked for manual confirmation rather than automatically replayed.
