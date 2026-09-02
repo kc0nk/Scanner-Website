@@ -67,8 +67,6 @@ class MainWindow(QMainWindow):
 
     def topbar(self):
         f=QFrame();f.setObjectName("topbar");f.setFixedHeight(76);l=QHBoxLayout(f);l.setContentsMargins(28,12,28,12);l.addStretch()
-        for txt,col in [("⚡  49,677 AI CREDITS",PURPLE),("◉  95 COINS",GOLD),("◌",TEXT)]:
-            x=QLabel(txt);x.setStyleSheet(f"color:{col};background:#0b1428;border:1px solid {BORDER};border-radius:18px;padding:10px 15px;");l.addWidget(x)
         l.addWidget(QPushButton("H   hackers01  ▾"));return f
 
     def page(self):
@@ -78,12 +76,57 @@ class MainWindow(QMainWindow):
         if sub:q=QLabel(sub);q.setStyleSheet(f"color:{MUTED};font-size:13px;");l.addWidget(q)
 
     def dashboard(self):
-        s,l=self.page();self.title(l,"Desktop Recon","Dashboard","Account overview & live reconnaissance activity.")
-        hero=QFrame();hero.setObjectName("panel");hl=QHBoxLayout(hero);hl.setContentsMargins(30,25,30,25);v=QVBoxLayout();tag=QLabel("●  SYSTEM ACTIVE");tag.setStyleSheet(f"color:{GREEN};background:#062c2a;border:1px solid #0d6157;border-radius:15px;padding:7px 12px;");tag.setFixedWidth(150);v.addWidget(tag);hi=QLabel("Hello, <font color='#3b9bff'>hackers01</font> 👋");hi.setStyleSheet("font-size:27px;font-weight:800;");v.addWidget(hi);v.addWidget(QLabel("Desktop reconnaissance workspace."));hl.addLayout(v);hl.addStretch();p=QPushButton("＋  New Project Scope");p.setObjectName("primary");p.clicked.connect(lambda:self.show_page("Web Analyzer"));hl.addWidget(p);l.addWidget(hero)
-        grid=QGridLayout();self.m1=Metric("Projects",0,CYAN);self.m2=Metric("Scans",0,PURPLE);self.m3=Metric("Requests",0,CYAN);self.m4=Metric("Findings",0,RED)
-        for i,m in enumerate([self.m1,self.m2,self.m3,self.m4]):grid.addWidget(m,0,i)
-        l.addLayout(grid);lab=QLabel("⌁  RECENT RECON PROJECTS");lab.setStyleSheet("font-size:16px;font-weight:700;");l.addWidget(lab)
-        card=QFrame();card.setObjectName("card");cl=QVBoxLayout(card);cl.addWidget(QLabel("No projects yet"));x=QLabel("Start a Web Analyzer scope to create your first recon project.");x.setStyleSheet(f"color:{MUTED};");cl.addWidget(x);l.addWidget(card);return s
+        s,l=self.page()
+        # Clean reference-style dashboard: compact welcome panel, then project URL input.
+        hero=QFrame(); hero.setObjectName("panel")
+        hl=QHBoxLayout(hero); hl.setContentsMargins(24,18,24,18); hl.setSpacing(18)
+
+        left=QVBoxLayout(); left.setSpacing(7)
+        tag=QLabel("●  SYSTEM ACTIVE")
+        tag.setStyleSheet(f"color:{GREEN};background:#062c2a;border:1px solid #0d6157;border-radius:15px;padding:5px 10px;")
+        tag.setFixedWidth(150)
+        left.addWidget(tag)
+        hi=QLabel("Hello, <font color='#3b9bff'>hackers01</font> 👋")
+        hi.setStyleSheet("font-size:25px;font-weight:800;")
+        left.addWidget(hi)
+        hl.addLayout(left,1)
+
+        divider=QFrame(); divider.setFrameShape(QFrame.VLine); divider.setFrameShadow(QFrame.Plain)
+        divider.setStyleSheet(f"color:{BORDER};background:{BORDER};max-width:1px;")
+        hl.addWidget(divider)
+
+        p=QPushButton("↗  Open Project")
+        p.setObjectName("primary")
+        p.clicked.connect(lambda:self.show_page("Web Analyzer"))
+        p.setMinimumWidth(155)
+        hl.addWidget(p)
+        l.addWidget(hero)
+
+        url_card=QFrame(); url_card.setObjectName("card")
+        ul=QVBoxLayout(url_card); ul.setContentsMargins(18,16,18,16); ul.setSpacing(9)
+        label=QLabel("PROJECT URL")
+        label.setStyleSheet(f"color:{MUTED};font-size:10px;font-weight:700;letter-spacing:2px;")
+        ul.addWidget(label)
+        row=QHBoxLayout(); row.setSpacing(10)
+        self.dashboard_url=QLineEdit()
+        self.dashboard_url.setPlaceholderText("https://target.example")
+        self.dashboard_url.returnPressed.connect(self.open_dashboard_target)
+        row.addWidget(self.dashboard_url,1)
+        open_url=QPushButton("Open")
+        open_url.setObjectName("primary")
+        open_url.clicked.connect(self.open_dashboard_target)
+        row.addWidget(open_url)
+        ul.addLayout(row)
+        l.addWidget(url_card)
+
+        l.addStretch()
+        return s
+
+    def open_dashboard_target(self):
+        url=self.dashboard_url.text().strip()
+        if url:
+            self.show_page("Web Analyzer")
+            self.target_edit.setText(url)
 
     def analyzer(self):
         s,l=self.page();self.title(l,"Recon Engine","Web Analyzer","Map the target, inspect requests, then work with payloads manually.")
