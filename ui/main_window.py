@@ -4,7 +4,7 @@ from datetime import datetime
 from urllib.parse import urlsplit, parse_qsl, urlencode, urlunsplit
 import httpx
 from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QColor, QBrush, QPen, QGraphicsRectItem, QGraphicsTextItem, QGraphicsLineItem
 from PySide6.QtWidgets import *
 from app.version import __version__
 from core.analyzer import WebAnalyzer, AnalysisResult
@@ -220,10 +220,163 @@ class MainWindow(QMainWindow):
             self.rep_response.setPlainText(text)
         except Exception as e:self.rep_response.setPlainText("REQUEST ERROR\n\n"+str(e))
     def workflow(self):
-        s,l=self.page();self.title(l,"Workflow","Workflow","Target → Discover → Analyze → Test → Review.")
-        for num,name,desc in [("01","TARGET","Define the authorized target and scope."),("02","DISCOVER","Map pages, requests, forms, scripts and technologies."),("03","ANALYZE","Select an observed request and choose a payload family when testing is appropriate."),("04","TEST / REVIEW","Send the edited request through Repeater and inspect the real response.")]:
-            card=QFrame();card.setObjectName("card");row=QHBoxLayout(card);row.setContentsMargins(22,18,22,18);n=QLabel(num);n.setFixedSize(46,46);n.setAlignment(Qt.AlignCenter);n.setStyleSheet(f"background:#0b2b48;border:1px solid #14516d;border-radius:12px;color:{CYAN};font-size:16px;font-weight:800;");row.addWidget(n);v=QVBoxLayout();h=QLabel(name);h.setStyleSheet("font-size:15px;font-weight:800;");d=QLabel(desc);d.setStyleSheet(f"color:{MUTED};font-size:12px;");v.addWidget(h);v.addWidget(d);row.addLayout(v);row.addStretch();l.addWidget(card)
-        l.addStretch();return s
+        # Visual workflow builder inspired by the reference: node library + canvas + properties.
+        root = QWidget()
+        root.setObjectName("workflowRoot")
+        main = QHBoxLayout(root)
+        main.setContentsMargins(18, 18, 18, 18)
+        main.setSpacing(12)
+
+        # Left node library
+        library = QFrame(); library.setObjectName("card"); library.setFixedWidth(220)
+        lv = QVBoxLayout(library); lv.setContentsMargins(14, 14, 14, 14); lv.setSpacing(8)
+        head = QLabel("Nodes Library"); head.setStyleSheet("font-size:15px;font-weight:800;")
+        sub = QLabel("Drag-ready building blocks")
+        sub.setStyleSheet(f"color:{MUTED};font-size:10px;")
+        lv.addWidget(head); lv.addWidget(sub); lv.addSpacing(6)
+        self.workflow_buttons = {}
+        node_defs = [
+            ("＋", "Custom node", "Customize a node in the right panel", "custom"),
+            ("⚡", "Trigger", "Initiate workflow", "trigger"),
+            ("▶", "Action", "Perform a task", "action"),
+            ("◉", "Notification", "Send status or notifications", "notification"),
+            ("☷", "Conditional", "Branch the workflow", "conditional"),
+            ("◷", "Delay", "Pause the workflow", "delay"),
+            ("A", "User Task", "Assign a manual step", "task"),
+            ("↻", "Loop", "Repeat a set of actions", "loop"),
+            ("↗", "Sub-process", "Embed another workflow", "subprocess"),
+            ("⇄", "Parallel", "Run multiple branches", "parallel"),
+            ("◇", "Decision", "Route the workflow", "decision"),
+            ("⊕", "Merge", "Merge branches", "merge"),
+        ]
+        for glyph, label, desc, kind in node_defs:
+            b = QPushButton(f"{glyph}   {label}")
+            b.setToolTip(desc); b.setProperty("workflow_kind", kind)
+            b.setStyleSheet(f"QPushButton{{text-align:left;padding:9px 10px;border-radius:8px;background:#071326;border:1px solid #132544;color:{TEXT};}} QPushButton:hover{{border-color:{CYAN};background:#0b1f39;}}")
+            b.clicked.connect(lambda _, k=kind, lab=label: self.add_workflow_node(k, lab))
+            self.workflow_buttons[kind] = b; lv.addWidget(b)
+        lv.addStretch()
+        main.addWidget(library)
+
+        # Center workflow canvas
+        center = QFrame(); center.setObjectName("card")
+        cv = QVBoxLayout(center); cv.setContentsMargins(10, 10, 10, 10); cv.setSpacing(8)
+        toolbar = QHBoxLayout()
+        start = QPushButton("▶  Run from Start"); start.setObjectName("primary"); start.clicked.connect(self.run_workflow_preview)
+        toolbar.addWidget(start)
+        toolbar.addWidget(QPushButton("＋  Add node", clicked=lambda: self.add_workflow_node("custom", "Custom node")))
+        toolbar.addStretch()
+        zoom_minus = QPushButton("−"); zoom_plus = QPushButton("＋"); fit = QPushButton("Fit")
+        zoom_minus.clicked.connect(lambda: self.workflow_view.scale(0.9, 0.9)); zoom_plus.clicked.connect(lambda: self.workflow_view.scale(1.1, 1.1)); fit.clicked.connect(self.fit_workflow)
+        toolbar.addWidget(zoom_minus); toolbar.addWidget(zoom_plus); toolbar.addWidget(fit)
+        cv.addLayout(toolbar)
+        self.workflow_scene = QGraphicsScene(self)
+        self.workflow_scene.setSceneRect(0, 0, 1800, 1050)
+        self.workflow_view = QGraphicsView(self.workflow_scene)
+        self.workflow_view.setRenderHints(self.workflow_view.renderHints())
+        self.workflow_view.setDragMode(QGraphicsView.ScrollHandDrag)
+        self.workflow_view.setBackgroundBrush(QColor("#06101f"))
+        self.workflow_view.setFrameShape(QFrame.NoFrame)
+        cv.addWidget(self.workflow_view, 1)
+        main.addWidget(center, 1)
+
+        # Right properties panel
+        props = QFrame(); props.setObjectName("card"); props.setFixedWidth(300)
+        pv = QVBoxLayout(props); pv.setContentsMargins(16, 16, 16, 16); pv.setSpacing(10)
+        ph = QHBoxLayout(); ptitle = QLabel("Properties"); ptitle.setStyleSheet("font-size:15px;font-weight:800;"); ph.addWidget(ptitle); ph.addStretch(); pv.addLayout(ph)
+        tabs = QTabWidget(); general = QWidget(); gv = QFormLayout(general); gv.setContentsMargins(0, 10, 0, 0)
+        self.wf_name = QLineEdit("Decision"); self.wf_desc = QLineEdit("Route the workflow"); self.wf_status = QComboBox(); self.wf_status.addItems(["Active", "Draft", "Disabled"])
+        gv.addRow("Title", self.wf_name); gv.addRow("Description", self.wf_desc); gv.addRow("Status", self.wf_status)
+        tabs.addTab(general, "Properties")
+        widgets = QWidget(); wv = QVBoxLayout(widgets); wv.addWidget(QLabel("Node configuration")); self.wf_config = QPlainTextEdit(); self.wf_config.setPlaceholderText("Node settings will appear here…"); wv.addWidget(self.wf_config); tabs.addTab(widgets, "Widgets")
+        pv.addWidget(tabs, 1)
+        apply_btn = QPushButton("Apply changes"); apply_btn.clicked.connect(self.apply_workflow_properties); pv.addWidget(apply_btn)
+        main.addWidget(props)
+
+        # Seed canvas with a clean reference workflow.
+        self.workflow_nodes = []
+        self.workflow_edges = []
+        self._wf_counter = 0
+        self.seed_workflow()
+        return root
+
+    def _workflow_node_color(self, kind):
+        return {"trigger":"#0b6ea8", "action":"#0d3c67", "conditional":"#0c4f52", "decision":"#0c4f52", "notification":"#2d3c69", "delay":"#273a5b", "custom":"#1a3556"}.get(kind, "#142944")
+
+    def add_workflow_node(self, kind="custom", label="Custom node", pos=None):
+        if not hasattr(self, "workflow_scene"): return
+        self._wf_counter += 1
+        node = QGraphicsRectItem(0, 0, 220, 100)
+        node.setBrush(QBrush(QColor(self._workflow_node_color(kind))))
+        node.setPen(QPen(QColor("#31527d"), 1.2))
+        node.setFlag(QGraphicsItem.ItemIsMovable, True); node.setFlag(QGraphicsItem.ItemIsSelectable, True)
+        x, y = pos if pos else (100 + (self._wf_counter % 4) * 270, 100 + ((self._wf_counter // 4) % 3) * 160)
+        node.setPos(x, y)
+        node.kind = kind; node.label = label
+        title = self.workflow_scene.addText(label)
+        title.setDefaultTextColor(QColor(TEXT)); title.setFont(QFont("DejaVu Sans", 11, QFont.Bold)); title.setParentItem(node); title.setPos(12, 12)
+        desc = self.workflow_scene.addText({"trigger":"Initiate workflow", "action":"Perform a task", "conditional":"Branch the workflow", "decision":"Route the workflow"}.get(kind, "Customize node in the right panel"))
+        desc.setDefaultTextColor(QColor(MUTED)); desc.setFont(QFont("DejaVu Sans", 8)); desc.setParentItem(node); desc.setPos(12, 38)
+        port = self.workflow_scene.addEllipse(207, 42, 9, 9, QPen(QColor(CYAN)), QBrush(QColor(CYAN))); port.setParentItem(node)
+        inport = self.workflow_scene.addEllipse(4, 42, 9, 9, QPen(QColor("#4d6b91")), QBrush(QColor("#4d6b91"))); inport.setParentItem(node)
+        self.workflow_scene.addItem(node); self.workflow_nodes.append(node)
+        node.mousePressEvent = self._wf_node_press(node)
+        return node
+
+    def _wf_node_press(self, node):
+        def handler(event):
+            self.wf_name.setText(getattr(node, "label", "Node")); self.wf_desc.setText("Route the workflow" if node.kind in ("decision","conditional") else "Perform a workflow step")
+            QGraphicsRectItem.mousePressEvent(node, event)
+        return handler
+
+    def seed_workflow(self):
+        # Compact visual equivalent of the reference: Start → HTTP Request → Decision → branches → Final price.
+        a = self.add_workflow_node("trigger", "Start", (120, 180))
+        b = self.add_workflow_node("action", "HTTP Request", (410, 180))
+        c = self.add_workflow_node("decision", "Decision", (700, 180))
+        d = self.add_workflow_node("action", "Children's discount -50%", (1030, 80))
+        e = self.add_workflow_node("action", "Adult", (1030, 235))
+        f = self.add_workflow_node("action", "Senior's discount -25%", (1030, 390))
+        g = self.add_workflow_node("action", "Final price", (1370, 220))
+        self._add_workflow_edge(a, b)
+        self._add_workflow_edge(b, c)
+        self._add_workflow_edge(c, d)
+        self._add_workflow_edge(c, e)
+        self._add_workflow_edge(c, f)
+        self._add_workflow_edge(d, g)
+        self._add_workflow_edge(e, g)
+        self._add_workflow_edge(f, g)
+        self.workflow_scene.selectionChanged.connect(self.workflow_selection_changed)
+        self.fit_workflow()
+
+    def _add_workflow_edge(self, source, target):
+        sx = source.pos().x() + 220; sy = source.pos().y() + 50
+        tx = target.pos().x(); ty = target.pos().y() + 50
+        line = QGraphicsLineItem(sx, sy, tx, ty)
+        line.setPen(QPen(QColor("#2b9a85"), 2))
+        line.setZValue(-1)
+        self.workflow_scene.addItem(line)
+        self.workflow_edges.append(line)
+
+    def workflow_selection_changed(self):
+        items = self.workflow_scene.selectedItems()
+        if items and hasattr(items[0], "label"):
+            n = items[0]; self.wf_name.setText(n.label); self.wf_desc.setText("Route the workflow" if n.kind in ("decision","conditional") else "Perform a workflow step")
+
+    def apply_workflow_properties(self):
+        items = self.workflow_scene.selectedItems()
+        if not items or not hasattr(items[0], "label"): return
+        n = items[0]; n.label = self.wf_name.text().strip() or "Custom node"
+        for child in n.childItems():
+            if isinstance(child, QGraphicsTextItem):
+                if child.pos().y() < 30: child.setPlainText(n.label); break
+
+    def fit_workflow(self):
+        if hasattr(self, "workflow_view") and hasattr(self, "workflow_scene"):
+            self.workflow_view.fitInView(self.workflow_scene.itemsBoundingRect().adjusted(-80,-80,80,80), Qt.KeepAspectRatio)
+
+    def run_workflow_preview(self):
+        self.statusBar().showMessage("Workflow preview started from Start → HTTP Request → Decision → Final price", 5000)
     def show_page(self,name):
         for k,b in self.nav.items():b.setProperty("active",k==name);b.style().unpolish(b);b.style().polish(b)
         self.stack.setCurrentWidget(self.pages[name])
