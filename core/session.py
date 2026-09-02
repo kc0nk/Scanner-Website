@@ -98,6 +98,7 @@ class SessionHttpClient:
         self._browser_context = None
         self._browser_page = None
         self._browser_primed = False
+        self.last_request_snapshot = None
 
     async def close(self):
         try:
@@ -277,9 +278,44 @@ class SessionHttpClient:
         await self._sync_browser_cookies()
         return httpx.Response(response.status, headers=hdrs, content=body, request=httpx.Request(method,url))
 
+    def _build_request_snapshot(self, method: str, url: str, headers: dict[str, Any] | None, content: Any = None):
+        effective = dict(headers or {})
+        # Merge the current browser/session cookies into the exact request copy.
+        # Explicit Cookie wins if the caller deliberately supplied one.
+        if not any(str(k).lower() == "cookie" for k in effective):
+            try:
+                cookie_items = list(self.client.cookies.items())
+            except Exception:
+                cookie_items = []
+            if cookie_items:
+                effective["Cookie"] = "; ".join(f"{k}={v}" for k, v in cookie_items)
+        body = content if isinstance(content, bytes) else (str(content).encode("utf-8", "surrogatepass") if content is not None else b"")
+        parsed = urlparse(url)
+        target = parsed.path or "/"
+        if parsed.query:
+            target += "?" + parsed.query
+        lines = [f"{method.upper()} {target} HTTP/1.1"]
+        for key, value in effective.items():
+            lines.append(f"{key}: {value}")
+        raw = "\n".join(lines) + "\n\n"
+        try:
+            raw += body.decode("utf-8", "replace")
+        except Exception:
+            raw += body.decode("latin-1", "replace")
+        return {
+            "method": method.upper(),
+            "url": url,
+            "headers": effective,
+            "body": body,
+            "raw": raw,
+        }
+
     async def request(self, method: str, url: str, **kwargs: Any):
         """Send a request while preserving the JavaScript/browser session."""
         use_curl=bool(kwargs.pop("use_curl", True))
+        self.last_request_snapshot = self._build_request_snapshot(
+            method, url, kwargs.get("headers"), kwargs.get("content")
+        )
         # Prime once up front. This turns the raw /jwt/?i=1 JS challenge into
         # the real browser session before any scanner payload is sent.
         try:
@@ -305,6 +341,12 @@ class SessionHttpClient:
                 response=await self._browser_request(method,url,**dict(kwargs))
                 self.logger(f"[browser-fetch] {method.upper()} {url} -> {response.status_code}, {len(response.content)} bytes")
 
+        # Refresh the replay snapshot after transport, because bootstrap/session
+        # cookies may have changed during the request path. Keep the exact headers
+        # the module supplied plus the current cookie jar.
+        self.last_request_snapshot = self._build_request_snapshot(
+            method, url, kwargs.get("headers"), kwargs.get("content")
+        )
         last_response=response
         status=response.status_code
         server=(response.headers.get("server") or "").lower()

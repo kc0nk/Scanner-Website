@@ -30,7 +30,17 @@ class ExploitContext:
         url=candidate if candidate.startswith(("http://","https://")) else urljoin((self.session.current_url or self.target.url).rstrip('/')+'/',candidate.lstrip('/'))
         r=await self.http.request('GET',url); return r.text,str(r.url),r.status_code
     def add_finding(self, url, payload, vulnerability, response, *, confidence="medium", terminal_ready=False, request_raw=""):
-        """Record a concrete vulnerability finding for the UI/Repeater bridge."""
+        """Record a concrete finding and retain the exact request snapshot for replay.
+
+        Scanner modules generally call this immediately after the probe request that
+        produced the evidence. SessionHttpClient therefore keeps the last effective
+        request (method, URL, headers, body, raw HTTP) so the UI can later clone the
+        real request into Repeater instead of reconstructing a minimal GET/Host pair.
+        """
+        if not request_raw:
+            snap = getattr(self.http, "last_request_snapshot", None)
+            if isinstance(snap, dict):
+                request_raw = snap.get("raw", "")
         finding = {
             "url": str(url or ""),
             "payload": str(payload or ""),

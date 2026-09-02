@@ -9,7 +9,7 @@ from ui.main_window import MainWindow
 
 def main():
     app = QApplication(sys.argv)
-    app.setApplicationName("CTF Exploit Workbench v3.29")
+    app.setApplicationName("CTF Exploit Workbench v3.32")
     window = MainWindow()
     window.show()
 

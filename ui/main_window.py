@@ -1199,24 +1199,16 @@ class MainWindow(QMainWindow):
         for c, v in enumerate(vals):
             item = QTableWidgetItem(v)
             self.findings_table.setItem(row, c, item)
-        # Keep the complete request snapshot attached to the row.  Non-RCE
-        # findings are promoted directly into a new Repeater tab; RCE is routed
-        # only to Terminal and is never auto-executed.
+        # Keep the complete request snapshot attached to the row. Nothing is
+        # opened automatically: the analyst explicitly chooses an action via
+        # the context menu, just like Burp's findings workflow.
         self.findings_table.item(row, 5).setData(Qt.ItemDataRole.UserRole, repeater_raw or "")
+        self.findings_table.item(row, 5).setToolTip("Uses the exact scanner request snapshot when available; right-click to open it")
         is_rce = any(x in str(vuln).lower() for x in ("rce", "command injection", "remote code execution"))
         self.findings_table.item(row, 5).setText("TERMINAL" if is_rce else "REPEATER")
         self.findings_table.selectRow(0)
         self.findings_table.scrollToTop()
-        self.scan_terminal_hint.setText("1 finding shown • additional signals kept in terminal")
-        if not is_rce:
-            # Auto-promote the concrete scanner result into a fresh Repeater tab.
-            # The request/payload are preserved so it can be replayed and edited.
-            finding = {
-                "index": 1, "url": str(url or ""), "payload": str(payload or ""),
-                "vulnerability": str(vuln or ""), "response": str(response or ""),
-                "raw": str(repeater_raw or ""),
-            }
-            self._send_finding_to_repeater(finding)
+        self.scan_terminal_hint.setText("1 finding shown • right-click for actions")
 
     def _finding_row_data(self, row):
         if row < 0:
@@ -1263,8 +1255,7 @@ class MainWindow(QMainWindow):
         vuln = finding["vulnerability"].lower()
         is_rce = "rce" in vuln or "command injection" in vuln or "remote code execution" in vuln
 
-        primary = menu.addAction("Open in Terminal" if is_rce else "Open in Repeater")
-        repeater = menu.addAction("Send to Repeater") if is_rce else None
+        primary = menu.addAction("Open in Terminal" if is_rce else "Send to Repeater")
         menu.addSeparator()
         copy_url = menu.addAction("Copy URL")
         copy_payload = menu.addAction("Copy Payload")
@@ -1278,8 +1269,6 @@ class MainWindow(QMainWindow):
                 self._send_finding_to_terminal(finding)
             else:
                 self._send_finding_to_repeater(finding)
-        elif repeater is not None and chosen == repeater:
-            self._send_finding_to_repeater(finding)
         elif chosen == copy_url:
             QApplication.clipboard().setText(finding["url"])
             self._append_terminal_line("[clipboard] finding URL copied")
@@ -1301,13 +1290,37 @@ class MainWindow(QMainWindow):
             return
         raw = data.get("raw", "")
         url = data.get("url", "")
+        # A scanner finding is only useful in Repeater when we preserve the
+        # request that actually produced the evidence. Never silently reduce
+        # the finding to GET + Host. First try the structured session/network
+        # history, then the stored raw snapshot.
+        if not raw and url:
+            try:
+                parsed_url = urlsplit(url)
+                candidates = []
+                if getattr(self, "browser_worker", None) is not None:
+                    candidates = list(getattr(self.browser_worker, "_requests", []) or [])
+                if not candidates and getattr(self, "snapshot", None) is not None:
+                    candidates = list(getattr(self.snapshot, "network_requests", []) or [])
+                matching = [r for r in candidates if str(r.get("url", "")).split("#",1)[0] == str(url).split("#",1)[0]]
+                source = matching[-1] if matching else (candidates[-1] if candidates else None)
+                if source:
+                    method = str(source.get("method") or "GET").upper()
+                    request_url = str(source.get("url") or url)
+                    path = urlsplit(request_url).path or "/"
+                    if urlsplit(request_url).query:
+                        path += "?" + urlsplit(request_url).query
+                    headers = dict(source.get("headers") or {})
+                    if not any(str(k).lower() == "host" for k in headers):
+                        headers["Host"] = urlsplit(request_url).netloc
+                    lines = [f"{method} {path} HTTP/1.1"] + [f"{k}: {v}" for k,v in headers.items()]
+                    raw = "\n".join(lines) + "\n\n" + str(source.get("post_data") or "")
+            except Exception as exc:
+                self._append_terminal_line(f"[repeater] finding snapshot lookup failed: {exc}")
         if not raw:
-            from urllib.parse import urlsplit
-            p = urlsplit(url)
-            path = p.path or "/"
-            if p.query:
-                path += "?" + p.query
-            raw = f"GET {path} HTTP/1.1\nHost: {p.netloc}\nConnection: close\n\n"
+            self._append_terminal_line("[repeater] finding has no captured request snapshot; refusing to create a reduced GET request")
+            QMessageBox.warning(self, "Missing request snapshot", "This finding does not contain the original request snapshot, so it was not sent to Repeater.")
+            return
         st=self._new_repeater_tab(raw=raw,title=f"Finding {data['index']}")
         st["url"]=url; st["target"].setText(f"Target: {self.target_url or url}")
         self.pages.setCurrentIndex(3); self.nav_repeater.setChecked(True); self._sync_repeater_views(); self._append_terminal_line(f"[repeater] opened finding #{data['index']} in new tab")
