@@ -127,15 +127,25 @@ class MainWindow(QMainWindow):
         url=self.dashboard_url.text().strip()
         if url:
             self.show_page("Web Analyzer")
+            self.analyzer_target.setText(f"Target: {url}")
+            self.target_edit = QLineEdit()
             self.target_edit.setText(url)
 
     def analyzer(self):
-        s,l=self.page();self.title(l,"Recon Engine","Web Analyzer","Map the target, inspect requests, then work with payloads manually.")
-        bar=QFrame();bar.setObjectName("card");bl=QHBoxLayout(bar);self.target_edit=QLineEdit();self.target_edit.setPlaceholderText("https://target.example");bl.addWidget(self.target_edit,1);go=QPushButton("⚡  START ANALYSIS");go.setObjectName("primary");go.clicked.connect(self.start_analysis);bl.addWidget(go);l.addWidget(bar)
+        s,l=self.page()
+        # v1.0: keep the analyzer focused on artifacts. Target is supplied by Dashboard.
         grid=QGridLayout();self.metrics={};names=[("SITE MAP",CYAN),("NETWORK",CYAN),("SECRETS",PURPLE),("WEBSOCKETS",CYAN),("WEB FORMS",CYAN),("JS FILES",CYAN),("TECHNOLOGIES",CYAN),("STORAGE",CYAN),("COOKIES",CYAN)]
         for i,(n,c) in enumerate(names):self.metrics[n]=Metric(n,0,c);grid.addWidget(self.metrics[n],i//5,i%5)
-        l.addLayout(grid);self.tabs=QTabWidget()
-        for n in ["Site Map","Network","Secrets","WebSockets","Web Forms","JS Files","Technologies","Storage","Cookies","Payloads","AI ✨"]:self.tabs.addTab(self.make_tab(n),n)
+        l.addLayout(grid)
+
+        action=QFrame();action.setObjectName("card");al=QHBoxLayout(action);al.setContentsMargins(16,10,16,10)
+        self.analyzer_target=QLabel("Target: —");self.analyzer_target.setStyleSheet(f"color:{MUTED};font-size:12px;")
+        al.addWidget(self.analyzer_target,1)
+        go=QPushButton("⚡  START ANALYSIS");go.setObjectName("primary");go.clicked.connect(self.start_analysis);al.addWidget(go)
+        l.addWidget(action)
+
+        self.tabs=QTabWidget()
+        for n in ["Site Map","Network","Secrets","WebSockets","Web Forms","JS Files","Technologies","Storage","Cookies","Payloads"]:self.tabs.addTab(self.make_tab(n),n)
         l.addWidget(self.tabs,1);return s
 
     def make_tab(self,name):
@@ -162,9 +172,9 @@ class MainWindow(QMainWindow):
         target=self.target_edit.text().strip()
         if not target:return
         for m in self.metrics.values():m.setValue(0)
-        self.table.setRowCount(0);self.tabs.setCurrentIndex(1);self.worker=Worker(target);self.worker.done.connect(self.analysis_done);self.worker.failed.connect(lambda e:self.ai.setHtml(f"<h2>Analysis error</h2><p>{html.escape(e)}</p>"));self.worker.start()
+        self.table.setRowCount(0);self.tabs.setCurrentIndex(1);self.worker=Worker(target);self.worker.done.connect(self.analysis_done);self.worker.failed.connect(lambda e:self.statusBar().showMessage(f"Analysis error: {e}"));self.worker.start()
     def analysis_done(self,r:AnalysisResult):
-        self.result=r;self.metrics["SITE MAP"].setValue(len(r.site_map));self.metrics["NETWORK"].setValue(len(r.requests));self.metrics["SECRETS"].setValue(len(r.secrets));self.metrics["WEB FORMS"].setValue(len(r.forms));self.metrics["JS FILES"].setValue(len(r.js_files));self.metrics["TECHNOLOGIES"].setValue(len(r.technologies));self.metrics["COOKIES"].setValue(len(r.cookies));self.m2.setValue(1);self.m3.setValue(len(r.requests))
+        self.result=r;self.metrics["SITE MAP"].setValue(len(r.site_map));self.metrics["NETWORK"].setValue(len(r.requests));self.metrics["SECRETS"].setValue(len(r.secrets));self.metrics["WEB FORMS"].setValue(len(r.forms));self.metrics["JS FILES"].setValue(len(r.js_files));self.metrics["TECHNOLOGIES"].setValue(len(r.technologies));self.metrics["COOKIES"].setValue(len(r.cookies))
         for rec in r.requests:
             row=self.table.rowCount();self.table.insertRow(row)
             for col,val in enumerate([rec.method,str(rec.status),rec.url,rec.content_type,str(rec.size)]):self.table.setItem(row,col,QTableWidgetItem(val))
@@ -173,7 +183,7 @@ class MainWindow(QMainWindow):
             vals=[rec.method,rec.url,"Yes" if params else "",str(rec.status),str(rec.size),rec.content_type,"", "", datetime.now().strftime("%H:%M:%S")]
             for col,val in enumerate(vals): self.history_table.setItem(hrow,col,QTableWidgetItem(val))
         self.history_count.setText(f"{len(r.requests)} requests")
-        self.fill_tab(0,"\n".join(r.site_map));self.fill_tab(2,"\n".join(r.secrets) or "No secret artifacts collected.");self.fill_tab(4,"\n".join(f"{x['method']} {x['action']}" for x in r.forms) or "No forms observed.");self.fill_tab(5,"\n".join(r.js_files) or "No JavaScript files observed.");self.fill_tab(6,"\n".join(r.technologies) or "No technology headers identified.");self.fill_tab(8,"\n".join(r.cookies) or "No cookies observed.");self.ai.setHtml(f"<h2>Analysis complete</h2><p><b>{html.escape(r.target)}</b></p><p>Collected {len(r.requests)} network requests and {len(r.site_map)} in-scope URLs.</p>")
+        self.fill_tab(0,"\n".join(r.site_map));self.fill_tab(2,"\n".join(r.secrets) or "No secret artifacts collected.");self.fill_tab(4,"\n".join(f"{x['method']} {x['action']}" for x in r.forms) or "No forms observed.");self.fill_tab(5,"\n".join(r.js_files) or "No JavaScript files observed.");self.fill_tab(6,"\n".join(r.technologies) or "No technology headers identified.");self.fill_tab(8,"\n".join(r.cookies) or "No cookies observed.")
     def history_selected(self):
         if not hasattr(self,"history_table") or not self.result:return
         row=self.history_table.currentRow()

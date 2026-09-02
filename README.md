@@ -1,14 +1,7 @@
 # CTF Exploit Workbench v1.0.0
 
-Desktop-first web analysis workbench.
+Desktop web analysis baseline.
 
-## v1.0 scope
-- Dashboard UI follows the supplied reference workflow/style.
-- Web Analyzer for target-scoped reconnaissance.
-- Payload Library inside Web Analyzer.
-- Workflow page.
-- Burp-style manual Repeater with editable request and real response.
-- Network rows can be opened in Repeater.
-- No Terminal, Intruder, legacy scanner modules, or flag extractor.
+Main areas: Dashboard, Web Analyzer, Workflow, Repeater.
 
-Use only against systems you are authorized to test.
+The Web Analyzer keeps payload testing as an integrated feature. The target URL is supplied from the Dashboard project scope; the Analyzer itself focuses on artifact metrics, network data, payloads, and controlled handoff to Repeater.
