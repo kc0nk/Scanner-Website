@@ -8,7 +8,6 @@ from PySide6.QtGui import QFont
 from PySide6.QtWidgets import *
 from app.version import __version__
 from core.analyzer import WebAnalyzer, AnalysisResult
-from core.payloads import PAYLOADS
 
 BG="#050b1a"; PANEL="#0b1428"; BORDER="#1a2a48"; TEXT="#d8e3f3"; MUTED="#7f91aa"; CYAN="#11c8ef"; PURPLE="#9b5cff"; RED="#ff4f78"; GREEN="#21d7a5"; GOLD="#f5b82e"
 STYLE=f'''
@@ -151,22 +150,19 @@ class MainWindow(QMainWindow):
     def make_tab(self,name):
         if name=="Network":
             w=QWidget();vl=QVBoxLayout(w);self.table=QTableWidget(0,5);self.table.setHorizontalHeaderLabels(["METHOD","STATUS","URL","CONTENT TYPE","SIZE"]);self.table.horizontalHeader().setSectionResizeMode(2,QHeaderView.Stretch);self.table.cellDoubleClicked.connect(self.network_to_repeater);vl.addWidget(self.table);return w
-        if name=="Payloads": return self.payload_tab()
-        if name=="AI ✨":
-            w=QWidget();vl=QVBoxLayout(w);self.ai=QTextBrowser();self.ai.setHtml("<h2>✨ AI Copilot</h2><p>Analysis notes will appear here after a scan.</p>");vl.addWidget(self.ai);return w
+        if name=="Payloads":
+            w=QWidget();vl=QVBoxLayout(w)
+            note=QLabel("All payloads run automatically against discovered request surfaces. No payload selector.")
+            note.setStyleSheet(f"color:{MUTED};font-size:12px;");vl.addWidget(note)
+            self.payload_table=QTableWidget(0,7)
+            self.payload_table.setHorizontalHeaderLabels(["FAMILY","PAYLOAD","METHOD","PARAMETER","STATUS","LENGTH","EVIDENCE"])
+            self.payload_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+            self.payload_table.setAlternatingRowColors(False)
+            ph=self.payload_table.horizontalHeader();ph.setSectionResizeMode(0,QHeaderView.ResizeToContents);ph.setSectionResizeMode(1,QHeaderView.Stretch);ph.setSectionResizeMode(2,QHeaderView.ResizeToContents);ph.setSectionResizeMode(3,QHeaderView.ResizeToContents);ph.setSectionResizeMode(4,QHeaderView.ResizeToContents);ph.setSectionResizeMode(5,QHeaderView.ResizeToContents);ph.setSectionResizeMode(6,QHeaderView.Stretch)
+            self.payload_table.setMinimumHeight(260);vl.addWidget(self.payload_table,1)
+            self.payload_status=QLabel("Waiting for analysis…");self.payload_status.setStyleSheet(f"color:{MUTED};font-size:11px;");vl.addWidget(self.payload_status)
+            return w
         w=QWidget();vl=QVBoxLayout(w);ed=QPlainTextEdit();ed.setReadOnly(True);ed.setPlaceholderText(f"{name} artifacts will appear here...");w._editor=ed;vl.addWidget(ed);return w
-
-    def payload_tab(self):
-        w=QWidget();v=QVBoxLayout(w)
-        info=QLabel("Payload Library · select a family and send a payload into Repeater for controlled testing.");info.setStyleSheet(f"color:{MUTED};");v.addWidget(info)
-        row=QHBoxLayout();self.payload_family=QComboBox();self.payload_family.addItems(PAYLOADS.keys());self.payload_family.currentTextChanged.connect(self.refresh_payloads);row.addWidget(self.payload_family,1);self.payload_combo=QComboBox();row.addWidget(self.payload_combo,2);btn=QPushButton("Send to Repeater");btn.setObjectName("primary");btn.clicked.connect(self.payload_to_repeater);row.addWidget(btn);v.addLayout(row)
-        self.payload_preview=QPlainTextEdit();self.payload_preview.setReadOnly(True);v.addWidget(self.payload_preview,1);self.refresh_payloads(self.payload_family.currentText());return w
-    def refresh_payloads(self,family):
-        if not hasattr(self,"payload_combo"):return
-        self.payload_combo.clear();self.payload_combo.addItems(PAYLOADS.get(family,[]));self.payload_combo.currentTextChanged.connect(self._preview_payload)
-        self._preview_payload(self.payload_combo.currentText())
-    def _preview_payload(self,p):
-        if hasattr(self,"payload_preview"):self.payload_preview.setPlainText(p or "")
 
     def start_analysis(self):
         target=self.target_edit.text().strip()
@@ -184,6 +180,12 @@ class MainWindow(QMainWindow):
             for col,val in enumerate(vals): self.history_table.setItem(hrow,col,QTableWidgetItem(val))
         self.history_count.setText(f"{len(r.requests)} requests")
         self.fill_tab(0,"\n".join(r.site_map));self.fill_tab(2,"\n".join(r.secrets) or "No secret artifacts collected.");self.fill_tab(4,"\n".join(f"{x['method']} {x['action']}" for x in r.forms) or "No forms observed.");self.fill_tab(5,"\n".join(r.js_files) or "No JavaScript files observed.");self.fill_tab(6,"\n".join(r.technologies) or "No technology headers identified.");self.fill_tab(8,"\n".join(r.cookies) or "No cookies observed.")
+        self.payload_table.setRowCount(0)
+        for pr in r.payload_runs:
+            row=self.payload_table.rowCount();self.payload_table.insertRow(row)
+            vals=[pr.family,pr.payload,"GET",pr.parameter,str(pr.status),str(pr.size),pr.evidence or (pr.error if pr.error else "—")]
+            for col,val in enumerate(vals):self.payload_table.setItem(row,col,QTableWidgetItem(val))
+        self.payload_status.setText(f"Automatic payload execution: {len(r.payload_runs)} probes completed")
     def history_selected(self):
         if not hasattr(self,"history_table") or not self.result:return
         row=self.history_table.currentRow()
@@ -198,13 +200,6 @@ class MainWindow(QMainWindow):
     def network_to_repeater(self,row,_col):
         if not self.result or row>=len(self.result.requests):return
         rec=self.result.requests[row];self.open_repeater(rec.method,rec.url,"User-Agent: CTF-Exploit-Workbench/1.0\nAccept: */*\n","")
-    def payload_to_repeater(self):
-        if not self.result or not self.result.requests:return
-        rec=self.result.requests[0];payload=self.payload_combo.currentText();url=rec.url
-        sp=urlsplit(url);qs=parse_qsl(sp.query,keep_blank_values=True)
-        if qs: qs[0]=(qs[0][0],payload);url=urlunsplit((sp.scheme,sp.netloc,sp.path, urlencode(qs),sp.fragment))
-        else: url=url + ("&" if "?" in url else "?") + "input=" + payload
-        self.open_repeater(rec.method,url,"User-Agent: CTF-Exploit-Workbench/1.0\nAccept: */*\n","")
     def open_repeater(self,method,url,headers,body):
         self.show_page("Repeater");self.rep_method.setCurrentText(method if method in ["GET","POST","PUT","PATCH","DELETE","HEAD","OPTIONS"] else "GET");self.rep_url.setText(url);self.rep_request.setPlainText(headers+(("\n\n"+body) if body else ""));self.rep_response.setPlainText("Ready — press Send to issue the request.")
     def repeater(self):
