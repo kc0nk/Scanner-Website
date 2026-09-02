@@ -57,10 +57,10 @@ class CSRFModule(ExploitModule):
                     accepted = same_status and small_delta
                     if accepted and not token_fields:
                         ctx.add_finding(action, probe, self.name, f"HTTP {test.status_code}; state-changing form accepted without visible CSRF token", confidence="medium")
-                        return ExploitResult(self.name, "signal", "Potential CSRF: state-changing form accepts cross-origin-style request", evidence="\n".join(evidence[-10:]))
+                        evidence.append(f"[finding] {action} [{probe}] -> CSRF signal; continuing remaining CSRF probes")
                     if accepted and token_fields and "Origin" in headers:
                         ctx.add_finding(action, probe, self.name, f"HTTP {test.status_code}; response remained equivalent after removing token under {headers['Origin']}", confidence="medium")
-                        return ExploitResult(self.name, "signal", "Potential CSRF: token/origin protection may be ineffective", evidence="\n".join(evidence[-10:]))
+                        evidence.append(f"[finding] {action} [{probe}] -> token/origin protection signal; continuing remaining CSRF probes")
                 except Exception as exc:
                     evidence.append(f"{action} [{probe}] -> {exc}")
         return ExploitResult(self.name, "no-signal", f"CSRF probes completed ({tested} tested)", evidence="\n".join(evidence[:30]))

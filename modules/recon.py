@@ -38,6 +38,10 @@ class ReconModule(ExploitModule):
             if k not in seen: seen.add(k); uniq.append(f)
         endpoints=sorted(endpoints); pages=sorted(pages)
         ctx.artifacts.set('recon.endpoints',endpoints); ctx.artifacts.set('recon.forms',uniq); ctx.artifacts.set('recon.pages_seen',pages); ctx.artifacts.set('recon.browser_seed',seeds)
+        request_corpus=ctx.request_corpus()
+        methods=sorted({str(r.get('method') or 'GET').upper() for r in request_corpus}) or ['GET']
+        ctx.artifacts.set('recon.requests',request_corpus); ctx.artifacts.set('recon.methods',methods)
+        ctx.logger('[recon] HTTP methods observed/discovered: ' + ', '.join(methods))
         upload_forms = []
         for form in uniq:
             input_types = {str(x.get('type', '')).lower() for x in form.get('inputs', [])}
@@ -47,4 +51,4 @@ class ReconModule(ExploitModule):
                 upload_forms.append(form)
         if upload_forms:
             ctx.artifacts.set('recon.upload_endpoints', [f.get('action') for f in upload_forms])
-        return ExploitResult(self.name,'ok',f'Discovered {len(endpoints)} endpoint(s), {len(uniq)} form(s), {len(pages)} page(s)',[Artifact('recon.endpoints',endpoints,self.name),Artifact('recon.forms',uniq,self.name),Artifact('recon.pages_seen',pages,self.name)],'\n'.join(evidence[:35]))
+        return ExploitResult(self.name,'ok',f'Discovered {len(endpoints)} endpoint(s), {len(uniq)} form(s), {len(pages)} page(s)',[Artifact('recon.endpoints',endpoints,self.name),Artifact('recon.forms',uniq,self.name),Artifact('recon.pages_seen',pages,self.name),Artifact('recon.requests',request_corpus,self.name),Artifact('recon.methods',methods,self.name)],'\n'.join(evidence[:35]))

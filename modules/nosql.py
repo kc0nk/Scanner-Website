@@ -25,6 +25,6 @@ class NoSQLModule(ExploitModule):
                     markers=("mongodb", "mongoerror", "$ne", "$regex", "cast to objectid")
                     if any(m in low for m in markers) or (r.status_code != baseline.status_code and abs(len(r.text)-len(baseline.text)) > 80):
                         ctx.add_finding(action, payload, self.name, f"HTTP {r.status_code}; NoSQL-specific/error or differential evidence", confidence="medium")
-                        return ExploitResult(self.name, "signal", "Potential NoSQL injection evidence observed", evidence=action)
+                        evidence.append(f"[finding] {action} [{payload}] -> NoSQL signal; continuing remaining NoSQL probes")
                 except Exception as exc:evidence.append(str(exc))
-        return ExploitResult(self.name,"no-signal","NoSQL probes completed",evidence="\n".join(evidence[:20]))
+        return ExploitResult(self.name,"signal" if ctx.artifacts.get("findings.detected") else "no-signal","NoSQL probes completed (all payloads tested)",evidence="\n".join(evidence[:20]))

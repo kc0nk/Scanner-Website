@@ -28,7 +28,7 @@ class CORSModule(ExploitModule):
                 if allow_origin in {header.get("Origin", ""), "*"}:
                     confidence = "high" if allow_credentials.lower() == "true" else "medium"
                     ctx.add_finding(endpoint, payload, self.name, f"HTTP {r.status_code}; Access-Control-Allow-Origin={allow_origin}; credentials={allow_credentials or 'absent'}", confidence=confidence)
-                    return ExploitResult(self.name, "signal", "Potential CORS policy weakness observed", evidence=endpoint)
+                    evidence.append(f"[finding] {endpoint} [{payload}] -> CORS policy weakness; continuing remaining CORS probes")
             except Exception as exc:
                 evidence.append(str(exc))
-        return ExploitResult(self.name, "no-signal", "CORS probes completed", evidence="\n".join(evidence[:20]))
+        return ExploitResult(self.name, "no-signal", "CORS probes completed (all payloads tested)", evidence="\n".join(evidence[:20]))

@@ -23,6 +23,6 @@ class XXEModule(ExploitModule):
                     if "ctf-xxe-probe" in low or "localhost" in low or "root:" in low:
                         ctx.add_finding(action, payload, self.name, f"HTTP {r.status_code}; XML entity/file marker observed", confidence="high")
                         ctx.artifacts.set("xxe.hit", action)
-                        return ExploitResult(self.name, "signal", "Potential XXE confirmed by entity/file marker", evidence=action)
+                        evidence.append(f"[finding] {action} [{payload}] -> XXE marker; continuing remaining XXE probes")
                 except Exception as exc: evidence.append(str(exc))
-        return ExploitResult(self.name,"no-signal","XXE probes completed",evidence="\n".join(evidence[:20]))
+        return ExploitResult(self.name,"signal" if ctx.artifacts.get("findings.detected") else "no-signal","XXE probes completed (all payloads tested)",evidence="\n".join(evidence[:20]))

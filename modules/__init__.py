@@ -1,4 +1,5 @@
 from modules.recon import ReconModule
+from modules.http_methods import HTTPMethodsModule
 from modules.old_sessions import OldSessionsModule
 from modules.sqli import SQLiModule
 from modules.idor import IDORModule
@@ -21,7 +22,7 @@ from modules.bypass403 import Bypass403Module
 from modules.backup_files import BackupSensitiveFilesModule
 
 ALL_MODULES = [
-    ReconModule, OldSessionsModule, SQLiModule, IDORModule, LFIModule, SSTIModule,
+    ReconModule, HTTPMethodsModule, OldSessionsModule, SQLiModule, IDORModule, LFIModule, SSTIModule,
     XSSModule, SSRFModule, XXEModule, RCEModule, FileUploadModule, OpenRedirectModule,
     AuthBypassModule, NoSQLModule, JWTModule, PrototypePollutionModule, HPPModule, CSRFModule,
     CORSModule, Bypass403Module, BackupSensitiveFilesModule,

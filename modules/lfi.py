@@ -33,7 +33,7 @@ class LFIModule(ExploitModule):
                         evidence.append(f"{probe} -> {resp.status_code}, {len(resp.text)} bytes")
                         if hit:
                             ctx.add_finding(probe, payload, self.name, f"HTTP {resp.status_code}; local-file markers observed", confidence="high")
-                            return ExploitResult(self.name, "signal", f"Possible local file read via parameter {name}", evidence=probe)
+                            evidence.append(f"[finding] {probe} -> local-file markers; continuing remaining LFI probes")
                     except Exception as exc:
                         evidence.append(str(exc))
-        return ExploitResult(self.name, "no-signal", "File-read probes completed", evidence="\n".join(evidence[:20]))
+        return ExploitResult(self.name, "no-signal", "File-read probes completed (all payloads tested)", evidence="\n".join(evidence[:20]))

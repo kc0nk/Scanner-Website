@@ -37,8 +37,8 @@ class RCEModule(ExploitModule):
                             finding={"url":probe,"payload":payload,"vulnerability":self.name,"response":f"HTTP {r.status_code}, {len(r.text)} bytes","confirmed":True,"terminal_ready":True}
                             ctx.add_finding(probe, payload, self.name, f"HTTP {r.status_code}, execution marker observed", confidence="high", terminal_ready=True)
                             ctx.logger(f"[VULN] {self.name} confirmed: {probe}")
-                            ctx.logger("[terminal] exploit candidate ready; no flag scanning")
-                            return ExploitResult(self.name,"success","Command execution behavior confirmed",artifacts=[Artifact("finding.rce",finding,self.name)],evidence="\n".join(evidence[-20:]))
+                            ctx.logger("[terminal] exploit candidate ready; no flag scanning; continuing remaining RCE probes")
+                            ctx.artifacts.set("execution.rce", finding)
                     except Exception as exc:
                         evidence.append(f"{probe} -> {exc}")
-        return ExploitResult(self.name,"signal" if evidence else "no-signal","Command-injection probes completed; vulnerability analysis only",evidence="\n".join(evidence[:30]))
+        return ExploitResult(self.name,"success" if ctx.artifacts.get("execution.rce") else ("signal" if evidence else "no-signal"),"Command-injection probes completed; all payloads tested",evidence="\n".join(evidence[:30]))

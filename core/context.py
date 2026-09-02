@@ -3,14 +3,13 @@ from urllib.parse import urljoin, urlparse
 import re
 from bs4 import BeautifulSoup
 from core.artifacts import ArtifactStore
-from core.flag import extract_flags, flag_to_regex
 from core.models import SessionSnapshot, Target
 from core.session import SessionHttpClient
 from core.payloads import PAYLOAD_CATALOG, WRITEUP_DERIVED_PAYLOADS, payload_summary, total_payloads, writeup_payload_summary
 
 class ExploitContext:
     def __init__(self,target:Target,session:SessionSnapshot,logger):
-        self.target=target; self.session=session; self.logger=logger; self.flags=flag_to_regex(target.flag_format); self.flag_scanning_enabled=False; self.artifacts=ArtifactStore(); self.http=SessionHttpClient(session, logger=logger)
+        self.target=target; self.session=session; self.logger=logger; self.artifacts=ArtifactStore(); self.http=SessionHttpClient(session, logger=logger)
         self.artifacts.set("payloads.catalog", PAYLOAD_CATALOG)
         self.artifacts.set("payloads.summary", payload_summary())
         self.artifacts.set("payloads.total", total_payloads())
@@ -29,6 +28,31 @@ class ExploitContext:
         candidate=path_or_url or self.session.current_url or self.target.url
         url=candidate if candidate.startswith(("http://","https://")) else urljoin((self.session.current_url or self.target.url).rstrip('/')+'/',candidate.lstrip('/'))
         r=await self.http.request('GET',url); return r.text,str(r.url),r.status_code
+    def request_corpus(self):
+        """Normalized browser/form request inventory for method-aware scanning."""
+        rows=[]; seen=set()
+        for item in self.session.network_requests or []:
+            if not isinstance(item, dict):
+                continue
+            url=str(item.get("url") or "")
+            method=str(item.get("method") or "GET").upper()
+            if not url or not self.in_scope(url):
+                continue
+            key=(method,url,str(item.get("post_data") or ""))
+            if key in seen: continue
+            seen.add(key)
+            rows.append({"method":method,"url":url,"headers":dict(item.get("headers") or {}),"body":item.get("post_data") or "","resource_type":item.get("resource_type") or "","source":"browser"})
+        for form in self.artifacts.get("recon.forms",[]) or []:
+            if not isinstance(form,dict): continue
+            method=str(form.get("method") or "GET").upper(); url=str(form.get("action") or "")
+            if not url or not self.in_scope(url): continue
+            fields=[(str(x.get("name")),str(x.get("value",""))) for x in (form.get("inputs") or []) if x.get("name")]
+            key=(method,url,tuple(fields))
+            if key in seen: continue
+            seen.add(key)
+            rows.append({"method":method,"url":url,"headers":{},"body":"","body_fields":fields,"resource_type":"form","source":"form"})
+        return rows
+
     def add_finding(self, url, payload, vulnerability, response, *, confidence="medium", terminal_ready=False, request_raw=""):
         """Record a concrete finding and retain the exact request snapshot for replay.
 
@@ -58,19 +82,11 @@ class ExploitContext:
             self.artifacts.set("findings.detected", findings[-100:])
         return finding
 
-    def scan_flags(self,*texts):
-        if not getattr(self, "flag_scanning_enabled", False):
-            return []
-        found=[]
-        for t in texts: found.extend(extract_flags(t,self.flags))
-        found=list(dict.fromkeys(found))
-        if found: self.artifacts.set('flags.found',list(dict.fromkeys((self.artifacts.get('flags.found',[]) or [])+found)))
-        return found
     def inspect_source(self, url: str, source: str, payload: str | None = None, payload_index: int | None = None, content_type: str = ""):
         """Inspect raw response/source similarly to View Source (Ctrl+U).
 
         This is intentionally passive: it records source metadata, meta tags,
-        comments, script references and flag matches for each probe.
+        comments, and script references for each probe.
         """
         text = source or ""
         content_type = content_type or ""
@@ -98,8 +114,6 @@ class ExploitContext:
             comments = re.findall(r"<!--(.*?)-->", text, re.S)
             metadata["comments"] = [c.strip()[:500] for c in comments[:20]]
         metadata["interesting_markers"] = interesting
-        metadata["flags"] = []
-        flags = []
         key = "source.inspect"
         history = self.artifacts.get(key, []) or []
         history.append(metadata)
@@ -110,9 +124,7 @@ class ExploitContext:
             suffix = f" payload #{payload_index}"
         else:
             suffix = ""
-        if flags:
-            self.logger(f"[source]{suffix} FLAG match in {url}: {', '.join(flags)}")
-        elif interesting:
+        if interesting:
             self.logger(f"[source]{suffix} {url} -> len={len(text)} markers={', '.join(interesting[:8])}")
         return metadata
 

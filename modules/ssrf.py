@@ -29,6 +29,6 @@ class SSRFModule(ExploitModule):
                         if any(m in low for m in markers):
                             ctx.add_finding(probe, payload, self.name, f"HTTP {r.status_code}; internal/metadata response markers observed", confidence="high")
                             ctx.artifacts.set("ssrf.hit", probe)
-                            return ExploitResult(self.name, "signal", "Potential SSRF confirmed by internal response markers", evidence=probe)
+                            evidence.append(f"[finding] {probe} -> internal/metadata marker; continuing remaining SSRF probes")
                     except Exception as exc: evidence.append(str(exc))
         return ExploitResult(self.name,"signal" if ctx.artifacts.get("ssrf.hit") else "no-signal","SSRF probes completed",evidence="\n".join(evidence[:20]))

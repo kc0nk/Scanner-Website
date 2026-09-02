@@ -23,7 +23,7 @@ class Bypass403Module(ExploitModule):
                     evidence.append(str(exc)); continue
                 if r.status_code in (200, 204, 301, 302, 307, 308):
                     ctx.add_finding(base, payload, self.name, f"HTTP {r.status_code}; alternate URL header changed access behavior", confidence="medium")
-                    return ExploitResult(self.name, "signal", "Potential 403 bypass via request header", evidence=base)
+                    evidence.append(f"[finding] {base} [{payload}] -> HTTP {r.status_code}; continuing remaining 403 probes")
                 evidence.append(f"{base} [{payload}] -> {r.status_code}")
                 continue
             path = payload if payload.startswith("/") else "/" + payload
@@ -33,7 +33,8 @@ class Bypass403Module(ExploitModule):
                 evidence.append(f"{url} -> {r.status_code}, {len(r.text)} bytes")
                 if r.status_code in (200, 204) and "/admin" in path:
                     ctx.add_finding(url, payload, self.name, f"HTTP {r.status_code}; protected-path variant accessible", confidence="high")
-                    return ExploitResult(self.name, "signal", "Potential 403 bypass observed", evidence=url)
+                    evidence.append(f"[finding] {url} -> protected-path variant accessible; continuing remaining 403 probes")
             except Exception as exc:
                 evidence.append(str(exc))
-        return ExploitResult(self.name, "no-signal", "403-bypass probes completed", evidence="\n".join(evidence[:20]))
+        found = bool(ctx.artifacts.get("findings.detected", []))
+        return ExploitResult(self.name, "signal" if found else "no-signal", "403-bypass probes completed (all payloads tested)", evidence="\n".join(evidence[:40]))

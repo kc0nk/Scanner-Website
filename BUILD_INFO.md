@@ -1,5 +1,10 @@
-Desktop CTF Web Workbench v3.33.0
+# CTF Exploit Workbench v3.40.1
 
-Scanner coverage expanded with concrete CSRF, CORS, 403-bypass, and backup/sensitive-file modules, plus finding registration for SSRF, XXE, NoSQL, Prototype Pollution, Auth Bypass, HPP, Upload, and Old Sessions. Scanner remains vulnerability/evidence-only; no flag hunting is performed.
+Patch focus: full scanner completion and strict separation of vulnerability scanning from flag extraction.
 
-Validation: compileall PASS; module import PASS; payload inventory 168 / 22 packs; ZIP integrity PASS.
+- Findings never stop a module or the global scan.
+- All selected modules run to a terminal state, with bounded module timeout/cleanup.
+- Scanner flag extraction/output is disabled.
+- Repeater displays raw target responses without flag filtering.
+- Scanner findings retain full request snapshots for Repeater.
+- RCE findings remain terminal-only and are never auto-executed.

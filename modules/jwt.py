@@ -236,16 +236,9 @@ class JWTModule(ExploitModule):
                         confidence="high",
                         terminal_ready=False,
                     )
-                    return ExploitResult(
-                        self.name,
-                        "success",
-                        f"JWT unsigned-token mutation accepted at {path}",
-                        artifacts=[
-                            Artifact("jwt.forged", forged, self.name),
-                            Artifact("jwt.response", response_text, self.name),
-                        ],
-                        evidence="\n".join(evidence),
-                    )
+                    ctx.artifacts.set("jwt.forged", forged)
+                    ctx.artifacts.set("jwt.response", response_text)
+                    evidence.append(f"[finding] JWT unsigned-token mutation accepted at {path}; continuing remaining JWT mutations")
 
             # HS256 candidate mutations. Reuse a matching secret first, then
             # test the bundled weak candidates.
@@ -271,17 +264,10 @@ class JWTModule(ExploitModule):
                                 confidence="high",
                                 terminal_ready=False,
                             )
-                            return ExploitResult(
-                                self.name,
-                                "success",
-                                f"JWT mutation accepted with HS256 secret at {path}",
-                                artifacts=[
-                                    Artifact("jwt.forged", forged, self.name),
-                                    Artifact("jwt.secret", secret, self.name),
-                                    Artifact("jwt.response", response_text, self.name),
-                                ],
-                                evidence="\n".join(evidence),
-                            )
+                            ctx.artifacts.set("jwt.forged", forged)
+                            ctx.artifacts.set("jwt.secret", secret)
+                            ctx.artifacts.set("jwt.response", response_text)
+                            evidence.append(f"[finding] JWT HS256 mutation accepted at {path}; continuing remaining JWT mutations")
 
             # Additional claim-only mutations are preserved as analysis
             # artifacts for Repeater/manual validation.

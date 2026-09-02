@@ -26,6 +26,6 @@ class AuthBypassModule(ExploitModule):
                         low=r.text.lower()
                         if (r.status_code == 200 and baseline is not None and r.status_code != baseline.status_code) or any(x in low for x in ("admin panel", "administrator", "is_admin")):
                             ctx.add_finding(probe, payload, self.name, f"HTTP {r.status_code}; privileged/authentication markers observed", confidence="medium")
-                            return ExploitResult(self.name, "signal", "Potential authentication bypass evidence observed", evidence=probe)
+                            evidence.append(f"[finding] {probe} -> privileged/authentication markers; continuing remaining auth-bypass probes")
                     except Exception as exc:evidence.append(str(exc))
-        return ExploitResult(self.name,"no-signal","Auth-bypass probes completed",evidence="\n".join(evidence[:20]))
+        return ExploitResult(self.name,"signal" if ctx.artifacts.get("findings.detected") else "no-signal","Auth-bypass probes completed (all payloads tested)",evidence="\n".join(evidence[:20]))

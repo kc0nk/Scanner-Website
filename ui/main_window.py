@@ -315,7 +315,14 @@ class BrowserWorker(QThread):
         try:
             self._pw = await async_playwright().start()
             self._browser = await self._pw.chromium.launch(headless=False)
-            self._context = await self._browser.new_context(viewport={"width": 1440, "height": 900})
+            self._context = await self._browser.new_context(
+                viewport={"width": 1440, "height": 900},
+                ignore_https_errors=True,
+                user_agent=(
+                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
+                ),
+            )
             self._page = await self._context.new_page()
             self._page.on("request", self._record_request)
             self._page.on("response", lambda r: asyncio.create_task(self._record_response(r)))
@@ -463,17 +470,17 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("CTF Exploit Workbench")
         self.resize(1450, 900)
         self.browser_worker: BrowserWorker | None = None
+        self._pending_browser_target = ""
+        self._browser_restart_connected = False
         self.snapshot = None
         self.worker = None
         self._repeater_worker = None
         self._repeater_browser_active = False
-        self.current_flags: list[str] = []
+        self._closing = False
         self.execution_ready = False
         self.execution_capabilities: list[str] = []
         self.target_url = ""
-        self.flag_format = "flag{...}"
         self._exploit_target = ""
-        self._exploit_flag_format = self.flag_format
         # Always create the scanner spinner before any worker signal can reach
         # _set_exploitation_running(). This prevents AttributeError during
         # scanner completion/error callbacks.
@@ -485,14 +492,6 @@ class MainWindow(QMainWindow):
         self._shutdown_timer = None
         self._shutdown_deadline = None
         self._signal_shutdown_requested = False
-        try:
-            config_path = Path.home() / ".ctf-exploit-workbench.json"
-            if config_path.exists():
-                saved = json.loads(config_path.read_text(encoding="utf-8"))
-                if isinstance(saved, dict) and isinstance(saved.get("flag_format"), str) and "..." in saved["flag_format"]:
-                    self.flag_format = saved["flag_format"]
-        except (OSError, json.JSONDecodeError):
-            pass
         self._build_ui()
 
     def _build_ui(self):
@@ -1042,18 +1041,9 @@ class MainWindow(QMainWindow):
             self.terminal_view.appendPlainText(text)
 
     def _save_flag_format(self):
-        value = self.flag_format_input.text().strip()
-        if not value or "..." not in value:
-            QMessageBox.warning(self, "Invalid flag format", "Use ... as the placeholder, e.g. picoCTF{...}.")
-            return
-        self.flag_format = value
-        try:
-            config_path = Path.home() / ".ctf-exploit-workbench.json"
-            config_path.write_text(json.dumps({"flag_format": value}, indent=2), encoding="utf-8")
-        except OSError:
-            pass
-        self._append_terminal_line(f"[config] flag format saved: {value}")
-        self.scan_terminal_hint.setText(f"Flag format saved: {value}")
+        # Legacy UI hook retained for compatibility. Scanner no longer has a
+        # flag configuration because flag extraction is intentionally disabled.
+        self._append_terminal_line("[config] Scanner flag extraction is disabled; inspect raw responses in Repeater")
 
     def _build_terminal_page(self):
         """Dedicated terminal UI; exploitation logs are mirrored here."""
@@ -1180,35 +1170,29 @@ class MainWindow(QMainWindow):
         return page
 
     def _add_finding(self, url, payload, vuln, response, repeater_raw=None):
-        """Keep the Findings panel intentionally compact: show one canonical finding only.
+        """Add every concrete finding to the table. Never collapse later payload hits."""
+        # De-duplicate the exact finding while preserving distinct payloads.
+        for row in range(self.findings_table.rowCount()):
+            existing = self._finding_row_data(row)
+            if existing and (existing.get("url"), existing.get("payload"), existing.get("vulnerability")) == (str(url), str(payload), str(vuln)):
+                return
 
-        The scanner can generate many module/payload signals for the same request.
-        The UI should not become a dump of every probe. The first concrete finding
-        is promoted to the table and subsequent findings are retained only in the
-        terminal log.
-        """
-        if self.findings_table.rowCount() > 0:
-            existing = self.findings_table.item(0, 3)
-            if existing:
-                self.scan_terminal_hint.setText("1 finding shown • additional signals kept in terminal")
-            return
-
-        row = 0
+        row = self.findings_table.rowCount()
         self.findings_table.insertRow(row)
         vals = [str(row + 1), str(url), str(payload), str(vuln), str(response), "RIGHT-CLICK"]
         for c, v in enumerate(vals):
             item = QTableWidgetItem(v)
             self.findings_table.setItem(row, c, item)
-        # Keep the complete request snapshot attached to the row. Nothing is
-        # opened automatically: the analyst explicitly chooses an action via
-        # the context menu, just like Burp's findings workflow.
-        self.findings_table.item(row, 5).setData(Qt.ItemDataRole.UserRole, repeater_raw or "")
-        self.findings_table.item(row, 5).setToolTip("Uses the exact scanner request snapshot when available; right-click to open it")
+
+        action_item = self.findings_table.item(row, 5)
+        action_item.setData(Qt.ItemDataRole.UserRole, repeater_raw or "")
+        action_item.setToolTip("Uses the exact scanner request snapshot; right-click for actions")
         is_rce = any(x in str(vuln).lower() for x in ("rce", "command injection", "remote code execution"))
-        self.findings_table.item(row, 5).setText("TERMINAL" if is_rce else "REPEATER")
-        self.findings_table.selectRow(0)
-        self.findings_table.scrollToTop()
-        self.scan_terminal_hint.setText("1 finding shown • right-click for actions")
+        action_item.setText("TERMINAL" if is_rce else "REPEATER")
+        self.findings_table.selectRow(row)
+        self.findings_table.scrollToItem(self.findings_table.item(row, 0))
+        count = self.findings_table.rowCount()
+        self.scan_terminal_hint.setText(f"{count} finding(s) shown • right-click for actions")
 
     def _finding_row_data(self, row):
         if row < 0:
@@ -2023,19 +2007,17 @@ class MainWindow(QMainWindow):
         if not target:
             QMessageBox.warning(self, "Target missing", "Submit a target URL from Dashboard first.")
             return False
-        flag_format = getattr(self, "flag_format_input", None)
-        flag_value = flag_format.text().strip() if flag_format else self.flag_format
-        if not flag_value or "..." not in flag_value:
-            QMessageBox.warning(self, "Invalid flag format", "Use ... as the placeholder, e.g. picoCTF{...}, flag{...}, or CTF2026[...].")
-            return False
         return True
 
-    def open_browser(self):
-        if not self._validate(): return
-        if self.browser_worker and self.browser_worker.isRunning():
-            self.log("[!] Browser is already running")
-            return
-        target = self.dashboard_url.text().strip()
+    def _start_browser_for_target(self, target):
+        # Each target gets a fresh browser worker/session so cookies, local storage,
+        # history, and TLS/session state from a previous host cannot leak into it.
+        self.target_url = target
+        self._response_cache = []
+        try:
+            self.request_table.setRowCount(0)
+        except Exception:
+            pass
         self.log(f"[>] Opening {target}")
         self.browser_worker = BrowserWorker(target)
         self.browser_worker.browser_ready.connect(self._browser_ready)
@@ -2048,8 +2030,36 @@ class MainWindow(QMainWindow):
         self.browser_worker.repeater_response.connect(self._repeater_browser_response)
         self.browser_worker.repeater_error.connect(self._repeater_browser_error)
         self.browser_worker.error.connect(self._failed)
+        self.browser_worker.finished.connect(self._browser_worker_finished)
         self.browser_worker.start()
         self.log("[+] Chromium worker started")
+
+    def open_browser(self):
+        if not self._validate():
+            return
+        target = self.dashboard_url.text().strip()
+        if self.browser_worker and self.browser_worker.isRunning():
+            current = self.target_url or getattr(self.browser_worker, "target_url", "")
+            if current.rstrip('/') == target.rstrip('/'):
+                self.log("[!] Browser is already running for this target")
+                return
+            # Switching targets must create a clean session. Request a graceful
+            # shutdown, then start a brand-new browser worker after finished.
+            self._pending_browser_target = target
+            self.log(f"[>] Switching target: {current} -> {target}")
+            self.browser_worker.close_browser()
+            return
+        self._start_browser_for_target(target)
+
+    def _browser_worker_finished(self):
+        worker = self.sender()
+        if worker is self.browser_worker:
+            self.browser_worker = None
+        pending = self._pending_browser_target
+        self._pending_browser_target = ""
+        if pending and not self._closing:
+            if self.dashboard_url.text().strip().rstrip('/') == pending.rstrip('/'):
+                self._start_browser_for_target(pending)
 
     def _url_parts(self, url):
         from urllib.parse import urlparse, parse_qs
@@ -2143,10 +2153,6 @@ class MainWindow(QMainWindow):
             return
         selected = list(ALL_MODULES)
         self._exploit_target = self.dashboard_url.text().strip()
-        self._exploit_flag_format = self.flag_format_input.text().strip() if hasattr(self, "flag_format_input") else self.flag_format
-        if self._exploit_flag_format:
-            self.flag_format = self._exploit_flag_format
-        self._set_flags([])
         self._reset_execution_gate()
         self.findings_table.setRowCount(0)
         self.scan_target_label.setText(f"Target: {self.target_url}")
@@ -2163,8 +2169,7 @@ class MainWindow(QMainWindow):
         # IMPORTANT: never mutate Qt widgets from the worker thread.
         # The worker emits log_message; the GUI thread receives it via Qt signal.
         target = self._exploit_target
-        flag_format = self._exploit_flag_format
-        engine = ExploitEngine(Target(target, flag_format), self.snapshot, self.worker.log_message.emit, selected)
+        engine = ExploitEngine(Target(target), self.snapshot, self.worker.log_message.emit, selected)
         return await engine.run()
 
     def _on_exploit_log(self, text: str):
@@ -2184,42 +2189,12 @@ class MainWindow(QMainWindow):
             capability_hits.append("file upload path")
         if capability_hits:
             self._update_execution_gate(capability_hits)
-        # Promote concrete scanner signals into an actionable finding row.
-        if text.startswith("[signal]") or "[jwt-replay]" in lower or "reflection" in lower:
-            import re
-            m=re.search(r"(https?://\S+).*?->\s*(\d{3})", text)
-            if m and any(marker in lower for marker in ("jwt", "reflection", "potential", "confirmed", "vulnerab", "admin", "ssti", "sqli", "idor", "lfi", "xss", "ssrf", "xxe", "rce", "upload", "redirect", "nosql", "prototype", "parameter")):
-                url=m.group(1).rstrip(',.')
-                status=m.group(2)
-                vuln=("JWT" if "jwt" in lower else "Web vulnerability signal")
-                payload="auto-detected signal"
-                self._add_finding(url,payload,vuln,f"HTTP {status}")
+        # Findings are promoted only from the engine's structured
+        # ``findings.detected`` artifact in _exploit_done(). Plain log lines
+        # such as HTTP 200/[signal] never create a fake finding.
         if text.startswith("[>] "):
             module_name = text[4:].strip()
             self.scan_terminal_hint.setText(f"Running module: {module_name}")
-
-    def _set_flags(self, flags):
-        unique = []
-        for flag in flags or []:
-            if flag and flag not in unique:
-                unique.append(str(flag))
-        self.current_flags = unique
-        if unique:
-            for flag in unique:
-                self.log(f"[FLAG FOUND] {flag}")
-            if hasattr(self, "exploit_output"):
-                self._append_exploit_output("[FLAG] " + unique[0])
-
-    def copy_flag_text(self):
-        if not self.current_flags:
-            return
-        QApplication.clipboard().setText(self.current_flags[0])
-        self.log("[+] Flag copied to clipboard")
-
-    def clear_flag_output(self):
-        self.current_flags = []
-        self._reset_execution_gate()
-        self.log("[+] Flag output cleared")
 
     def _exploit_done(self, result):
         results, artifacts = result
@@ -2234,10 +2209,10 @@ class MainWindow(QMainWindow):
         if capability_hits:
             self._update_execution_gate(capability_hits)
         self._set_exploitation_running(False)
-        self._set_flags([])
-        self.scan_status_label.setText("SUCCESS" if found else "DONE")
+        timeout_count = sum(1 for item in results if getattr(item, "status", "") == "timeout")
+        self.scan_status_label.setText("DONE" if not timeout_count else f"DONE ({timeout_count} TIMEOUT)")
         self.scan_terminal_hint.setText(
-            f"Scan completed — {len(results)} module(s) executed."
+            f"Scan completed — {len(results)} module(s) executed; all configured payload probes processed."
         )
         self._append_exploit_output("")
         self._append_exploit_output("[+] Vulnerability scan complete")
@@ -2255,9 +2230,16 @@ class MainWindow(QMainWindow):
             for ev in evidence.splitlines()[:4]:
                 self._append_exploit_output(f"    {ev}")
         findings = artifacts.get("findings.detected", []) if isinstance(artifacts, dict) else []
-        if findings:
-            first = findings[0]
-            self._add_finding(first.get("url", ""), first.get("payload", ""), first.get("vulnerability", ""), first.get("response", ""), first.get("request_raw", ""))
+        for finding in findings:
+            if isinstance(finding, dict):
+                self._add_finding(
+                    finding.get("url", ""),
+                    finding.get("payload", ""),
+                    finding.get("vulnerability", ""),
+                    finding.get("response", ""),
+                    finding.get("request_raw", ""),
+                )
+        self._append_terminal_line(f"[+] Findings displayed: {self.findings_table.rowCount()}")
         self._append_terminal_line("[+] Vulnerability scan complete")
 
     @Slot()

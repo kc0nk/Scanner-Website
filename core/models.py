@@ -5,7 +5,8 @@ from typing import Any
 @dataclass
 class Target:
     url: str
-    flag_format: str
+    # Kept only for backwards-compatible construction; scanner never reads it.
+    flag_format: str = ""
 
 @dataclass
 class Artifact:

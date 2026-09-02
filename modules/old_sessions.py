@@ -20,7 +20,7 @@ class OldSessionsModule(ExploitModule):
         register -> login -> authenticated session -> /sessions -> admin token
 
     The recovered admin session is then replayed against the target and the
-    configured flag format is applied to the response.
+    The authenticated response is retained as normal HTTP evidence.
     """
 
     name = "Old Sessions / Session Hijacking"

@@ -13,6 +13,7 @@ class BackupSensitiveFilesModule(ExploitModule):
 
     async def run(self, ctx):
         evidence = []
+        hit = False
         base = ctx.target.url.rsplit("/", 1)[0] + "/"
         for payload in get_payloads(self.name):
             url = urljoin(base, payload.lstrip("/"))
@@ -23,7 +24,8 @@ class BackupSensitiveFilesModule(ExploitModule):
                 markers = ("[core", "db_password", "begin rsa private key", "<?php", "documentroot", "app_key=")
                 if r.status_code == 200 and any(m in low for m in markers):
                     ctx.add_finding(url, payload, self.name, f"HTTP 200; sensitive-file marker observed", confidence="high")
-                    return ExploitResult(self.name, "signal", "Potential sensitive/backup file exposure", evidence=url)
+                    hit = True
+                    evidence.append(f"[finding] {url} -> sensitive-file marker observed")
             except Exception as exc:
                 evidence.append(str(exc))
-        return ExploitResult(self.name, "no-signal", "Backup/sensitive-file probes completed", evidence="\n".join(evidence[:20]))
+        return ExploitResult(self.name, "signal" if hit else "no-signal", "Backup/sensitive-file probes completed", evidence="\n".join(evidence[:20]))

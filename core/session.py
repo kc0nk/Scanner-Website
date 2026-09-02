@@ -24,7 +24,14 @@ class BrowserSession:
     async def start(self):
         self._pw = await async_playwright().start()
         self.browser = await self._pw.chromium.launch(headless=False)
-        self.context = await self.browser.new_context(viewport={"width": 1440, "height": 900})
+        self.context = await self.browser.new_context(
+            viewport={"width": 1440, "height": 900},
+            ignore_https_errors=True,
+            user_agent=(
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
+            ),
+        )
         self.page = await self.context.new_page()
         await self.page.goto(self.target_url, wait_until="domcontentloaded", timeout=15000)
         self.logger("[browser] Chromium launched and target opened")
@@ -279,7 +286,15 @@ class SessionHttpClient:
         return httpx.Response(response.status, headers=hdrs, content=body, request=httpx.Request(method,url))
 
     def _build_request_snapshot(self, method: str, url: str, headers: dict[str, Any] | None, content: Any = None):
-        effective = dict(headers or {})
+        # Preserve browser-like defaults so Scanner -> Repeater gets a faithful
+        # replayable request even when a module only supplied URL/body.
+        effective = {
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Upgrade-Insecure-Requests": "1",
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+        }
+        effective.update(dict(headers or {}))
         # Merge the current browser/session cookies into the exact request copy.
         # Explicit Cookie wins if the caller deliberately supplied one.
         if not any(str(k).lower() == "cookie" for k in effective):
@@ -291,6 +306,8 @@ class SessionHttpClient:
                 effective["Cookie"] = "; ".join(f"{k}={v}" for k, v in cookie_items)
         body = content if isinstance(content, bytes) else (str(content).encode("utf-8", "surrogatepass") if content is not None else b"")
         parsed = urlparse(url)
+        if not any(str(k).lower() == "host" for k in effective) and parsed.netloc:
+            effective["Host"] = parsed.netloc
         target = parsed.path or "/"
         if parsed.query:
             target += "?" + parsed.query
