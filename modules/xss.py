@@ -38,9 +38,34 @@ class XSSModule(ExploitModule):
                         resp = await ctx.request_original(original, url=probe, method=method, headers=req_headers, body=request.get("body") or None)
                         ctx.inspect_source(str(resp.url), resp.text, payload, payload_counter, resp.headers.get("content-type", ""))
                         if token in resp.text:
-                            msg = f"Reflected input detected in {name} at {parts.path} using {payload}"
-                            evidence.append(msg)
-                            ctx.add_finding(probe, payload, self.name, f"HTTP {resp.status_code}; reflected marker observed", confidence="high")
+                            # Reflection alone is not promoted. For active canaries,
+                            # render the exact probe URL in the persistent browser and
+                            # verify DOM execution. Non-executing reflection remains a
+                            # tested candidate only.
+                            executed = False
+                            if "data-ctf-xss" in payload:
+                                try:
+                                    await ctx.http._ensure_browser()
+                                    page = ctx.http._browser_page
+                                    await page.goto(probe, wait_until="domcontentloaded", timeout=10000)
+                                    executed = await page.evaluate("document.documentElement.getAttribute('data-ctf-xss') === '1'")
+                                except Exception as browser_exc:
+                                    evidence.append(f"[xss-browser] {probe}: {browser_exc}")
+                            if executed:
+                                msg = f"[VERIFIED] XSS execution in {name} at {parts.path} using {payload}"
+                                evidence.append(msg)
+                                ctx.mark_payload(self.name, payload, "finding", f"DOM execution marker confirmed for parameter={name}")
+                                ctx.add_finding(
+                                    probe, payload, self.name,
+                                    f"HTTP {resp.status_code}; reflected and executed in browser; parameter={name}",
+                                    confidence="high",
+                                    parameter=name,
+                                    verification="Payload reflected into response and browser DOM execution marker data-ctf-xss=1 was observed",
+                                    methodology="Observe request -> inject XSS canary -> verify reflection -> render exact probe URL in browser -> verify JavaScript execution -> preserve exploit request for Repeater",
+                                )
+                            else:
+                                ctx.mark_payload(self.name, payload, "tested", f"reflected but execution not verified; parameter={name}")
+                                evidence.append(f"[candidate] reflected XSS marker in {name}; execution not promoted")
                     except Exception as exc:
                         evidence.append(str(exc))
         return ExploitResult(self.name, "signal" if evidence else "no-signal", "Reflection probes completed", evidence="\n".join(evidence[:20]))

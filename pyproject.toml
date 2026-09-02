@@ -1,6 +1,6 @@
 [project]
 name = "ctf-exploit-workbench"
-version = "3.42.2"
+version = "3.45.0"
 description = "Desktop CTF web security testing workbench"
 requires-python = ">=3.11"
 

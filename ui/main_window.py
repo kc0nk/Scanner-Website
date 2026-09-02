@@ -489,8 +489,6 @@ class MainWindow(QMainWindow):
         self._exploit_spinner.timeout.connect(self._update_exploit_spinner)
         self._exploit_spinner_index = 0
         self._shutdown_requested = False
-        self._shutdown_timer = None
-        self._shutdown_deadline = None
         self._signal_shutdown_requested = False
         self._build_ui()
 
@@ -529,23 +527,20 @@ class MainWindow(QMainWindow):
         side_layout.addSpacing(18)
 
         self.nav_dashboard = QPushButton("⌂   Dashboard")
-        self.nav_terminal = QPushButton(">_  Terminal")
         self.nav_exploitation = QPushButton("⚡  Scanner")
         self.nav_repeater = QPushButton("↻  Repeater")
-        self.nav_intruder = QPushButton("☄  Intruder")
         self.nav_dashboard.setToolTip("Dashboard")
-        self.nav_terminal.setToolTip("Terminal")
-        for btn in (self.nav_dashboard, self.nav_terminal, self.nav_exploitation, self.nav_repeater, self.nav_intruder):
+        self.nav_exploitation.setToolTip("Scanner")
+        self.nav_repeater.setToolTip("Repeater")
+        for btn in (self.nav_dashboard, self.nav_exploitation, self.nav_repeater):
             btn.setCheckable(True)
             btn.setAutoExclusive(True)
             btn.setObjectName("nav_button")
             side_layout.addWidget(btn)
 
         self.nav_dashboard.clicked.connect(lambda: self._switch_page(0))
-        self.nav_terminal.clicked.connect(lambda: self._switch_page(1))
-        self.nav_exploitation.clicked.connect(lambda: self._switch_page(2))
-        self.nav_repeater.clicked.connect(lambda: self._switch_page(3))
-        self.nav_intruder.clicked.connect(lambda: self._switch_page(4))
+        self.nav_exploitation.clicked.connect(lambda: self._switch_page(1))
+        self.nav_repeater.clicked.connect(lambda: self._switch_page(2))
         self.nav_dashboard.setChecked(True)
 
         side_layout.addStretch()
@@ -557,15 +552,11 @@ class MainWindow(QMainWindow):
         shell.addWidget(self.pages, 1)
 
         dashboard = self._build_dashboard_page()
-        terminal = self._build_terminal_page()
         exploitation = self._build_exploitation_page()
         repeater = self._build_repeater_page()
-        intruder = self._build_intruder_page()
         self.pages.addWidget(dashboard)
-        self.pages.addWidget(terminal)
         self.pages.addWidget(exploitation)
         self.pages.addWidget(repeater)
-        self.pages.addWidget(intruder)
 
         self.setStyleSheet("""
             QMainWindow { background: #0b0f14; color: #e7edf4; }
@@ -725,12 +716,13 @@ class MainWindow(QMainWindow):
         self.request_table.customContextMenuRequested.connect(self._show_request_context_menu)
         self.request_table.verticalHeader().setVisible(False)
         header = self.request_table.horizontalHeader()
+        # Dashboard request columns are user-resizable (drag the header divider).
+        # Keep only the row number content-sized; all useful fields can be widened
+        # or narrowed independently, including URL and Params.
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
-        for idx in range(4, 15):
-            header.setSectionResizeMode(idx, QHeaderView.ResizeMode.ResizeToContents)
+        for idx in range(1, 15):
+            header.setSectionResizeMode(idx, QHeaderView.ResizeMode.Interactive)
+        header.setStretchLastSection(False)
         self.request_table.setMinimumHeight(250)
         history_layout.addWidget(self.request_table)
         content.addWidget(history_frame, 1)
@@ -995,7 +987,7 @@ class MainWindow(QMainWindow):
         raw = "\n".join(lines) + "\n\n" + body
         st=self._new_repeater_tab(raw=raw,title=f"{method} {urlsplit(url).path or '/'}")
         st["url"]=url; st["target"].setText(f"Target: {urlsplit(url).scheme}://{urlsplit(url).netloc}")
-        self.pages.setCurrentIndex(3); self.nav_repeater.setChecked(True); self._sync_repeater_views(); self._append_terminal_line(f"[repeater] opened new tab for {method} {url}")
+        self.pages.setCurrentIndex(2); self.nav_repeater.setChecked(True); self._sync_repeater_views(); self._append_terminal_line(f"[repeater] opened new tab for {method} {url}")
 
     def _full_request_url(self, data):
         host = data.get("Host", "")
@@ -1090,7 +1082,7 @@ class MainWindow(QMainWindow):
         return page
 
     def _build_exploitation_page(self):
-        """Burp-like live scanner: terminal output + findings table."""
+        """Empty scanner shell for v3.45. Scanner payloads/commands are removed for rebuild."""
         page = QWidget()
         page.setObjectName("page")
         layout = QVBoxLayout(page)
@@ -1104,84 +1096,62 @@ class MainWindow(QMainWindow):
         layout.addWidget(kicker)
         layout.addWidget(title)
 
-        top = QFrame(); top.setObjectName("hero_card")
-        tl = QHBoxLayout(top); tl.setContentsMargins(14, 10, 14, 10); tl.setSpacing(10)
-        self.scan_target_label = QLabel("Target: —")
-        self.scan_target_label.setObjectName("panel_label")
-        self.scan_status_label = QLabel("IDLE")
-        self.scan_status_label.setObjectName("exploit_output_status")
-        self.scan_start_button = QPushButton("SCAN")
-        self.scan_start_button.setObjectName("dashboard_submit")
-        self.scan_start_button.setMinimumWidth(110)
-        self.scan_start_button.clicked.connect(self.start_exploitation)
-        tl.addWidget(self.scan_target_label, 1); tl.addWidget(self.scan_status_label); tl.addWidget(self.scan_start_button)
-        layout.addWidget(top)
-
-        splitter = QSplitter(Qt.Orientation.Vertical)
-        terminal_frame = QFrame(); terminal_frame.setObjectName("hero_card")
-        tv = QVBoxLayout(terminal_frame); tv.setContentsMargins(10,10,10,10); tv.setSpacing(6)
-        hdr = QHBoxLayout(); lbl = QLabel("Scan Terminal"); lbl.setObjectName("hero_title")
-        self.scan_terminal_hint = QLabel("Live module/payload output")
-        self.scan_terminal_hint.setObjectName("exploit_status")
-        hdr.addWidget(lbl); hdr.addStretch(1); hdr.addWidget(self.scan_terminal_hint); tv.addLayout(hdr)
-        self.exploit_output = QPlainTextEdit(); self._install_text_context_menu(self.exploit_output)
-        self.exploit_output.setObjectName("exploit_output"); self.exploit_output.setReadOnly(True)
-        self.exploit_output.setPlaceholderText("Scanner output...")
-        tv.addWidget(self.exploit_output, 1)
-        splitter.addWidget(terminal_frame)
-
-        findings_frame = QFrame(); findings_frame.setObjectName("hero_card")
-        fv = QVBoxLayout(findings_frame); fv.setContentsMargins(10,10,10,10); fv.setSpacing(6)
-        fh = QHBoxLayout(); ftitle=QLabel("Vulnerability Findings"); ftitle.setObjectName("hero_title")
-        fsub=QLabel("Right-click a finding for actions")
-        fsub.setObjectName("exploit_status")
-        fh.addWidget(ftitle); fh.addStretch(1); fh.addWidget(fsub); fv.addLayout(fh)
-        self.findings_table=QTableWidget(0,6)
-        self.findings_table.setObjectName("request_table")
-        self.findings_table.setHorizontalHeaderLabels(["#","URL","Payload","Vulnerability","Response","Action"])
-        self.findings_table.verticalHeader().setVisible(False)
-        self.findings_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.findings_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.findings_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.findings_table.customContextMenuRequested.connect(self._show_finding_context_menu)
-        h=self.findings_table.horizontalHeader()
-        h.setSectionResizeMode(0,QHeaderView.ResizeMode.ResizeToContents)
-        h.setSectionResizeMode(1,QHeaderView.ResizeMode.Stretch)
-        h.setSectionResizeMode(2,QHeaderView.ResizeMode.Stretch)
-        h.setSectionResizeMode(3,QHeaderView.ResizeMode.ResizeToContents)
-        h.setSectionResizeMode(4,QHeaderView.ResizeMode.ResizeToContents)
-        h.setSectionResizeMode(5,QHeaderView.ResizeMode.ResizeToContents)
-        fv.addWidget(self.findings_table,1)
-        splitter.addWidget(findings_frame)
-        splitter.setSizes([420,260])
-        layout.addWidget(splitter,1)
-        self._exploit_busy=False; self._exploit_spinner_index=0
+        empty = QFrame()
+        empty.setObjectName("hero_card")
+        ev = QVBoxLayout(empty)
+        ev.setContentsMargins(20, 20, 20, 20)
+        ev.addStretch(1)
+        msg = QLabel("Scanner workspace is empty in v3.45.0")
+        msg.setObjectName("hero_title")
+        msg.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ev.addWidget(msg)
+        detail = QLabel("Payloads, exploit commands, Terminal, and Intruder have been removed for the scanner rebuild.")
+        detail.setObjectName("exploit_status")
+        detail.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        detail.setWordWrap(True)
+        ev.addWidget(detail)
+        ev.addStretch(1)
+        layout.addWidget(empty, 1)
         return page
 
-    def _add_finding(self, url, payload, vuln, response, repeater_raw=None):
-        """Add every concrete finding to the table. Never collapse later payload hits."""
-        # De-duplicate the exact finding while preserving distinct payloads.
+    def _add_finding(self, url, payload, vuln, response, repeater_raw=None, finding_meta=None):
+        """Display one aggregated, exploit-verified vulnerability.
+
+        The table is a summary. Full methodology, payload set, request snapshot,
+        and verification evidence remain attached to the row for Repeater/actions.
+        """
+        meta = dict(finding_meta or {})
         for row in range(self.findings_table.rowCount()):
             existing = self._finding_row_data(row)
-            if existing and (existing.get("url"), existing.get("payload"), existing.get("vulnerability")) == (str(url), str(payload), str(vuln)):
+            if existing and (existing.get("url"), existing.get("vulnerability")) == (str(url), str(vuln)):
+                payload_text = existing.get("payload", "")
+                if str(payload) and str(payload) not in payload_text:
+                    payload_text = (payload_text + " | " + str(payload)).strip(" |")
+                    self.findings_table.item(row, 2).setText(payload_text)
+                if response:
+                    self.findings_table.item(row, 4).setText(str(response))
+                verification = meta.get("verification") or existing.get("verification") or "Verified exploit evidence"
+                self.findings_table.item(row, 5).setText(str(verification))
+                action_item = self.findings_table.item(row, 6)
+                if action_item:
+                    action_item.setData(Qt.ItemDataRole.UserRole, {"raw": repeater_raw or existing.get("raw", ""), **meta})
                 return
 
         row = self.findings_table.rowCount()
         self.findings_table.insertRow(row)
-        vals = [str(row + 1), str(url), str(payload), str(vuln), str(response), "RIGHT-CLICK"]
+        verification = meta.get("verification") or "Verified exploit evidence"
+        vals = [str(row + 1), str(url), str(payload), str(vuln), str(response), str(verification), "RIGHT-CLICK"]
         for c, v in enumerate(vals):
-            item = QTableWidgetItem(v)
-            self.findings_table.setItem(row, c, item)
-
-        action_item = self.findings_table.item(row, 5)
-        action_item.setData(Qt.ItemDataRole.UserRole, repeater_raw or "")
-        action_item.setToolTip("Uses the exact scanner request snapshot; right-click for actions")
+            self.findings_table.setItem(row, c, QTableWidgetItem(v))
+        action_item = self.findings_table.item(row, 6)
+        action_item.setData(Qt.ItemDataRole.UserRole, {"raw": repeater_raw or "", **meta})
+        action_item.setToolTip("Verified exploit request; right-click to replay in Repeater. Double-click row for methodology.")
         is_rce = any(x in str(vuln).lower() for x in ("rce", "command injection", "remote code execution"))
         action_item.setText("TERMINAL" if is_rce else "REPEATER")
         self.findings_table.selectRow(row)
         self.findings_table.scrollToItem(self.findings_table.item(row, 0))
         count = self.findings_table.rowCount()
-        self.scan_terminal_hint.setText(f"{count} finding(s) shown • right-click for actions")
+        self.scan_terminal_hint.setText(f"{count} verified finding(s) shown • right-click for actions")
 
     def _finding_row_data(self, row):
         if row < 0:
@@ -1190,16 +1160,50 @@ class MainWindow(QMainWindow):
         for c in range(self.findings_table.columnCount()):
             item = self.findings_table.item(row, c)
             vals.append(item.text() if item else "")
-        meta_item = self.findings_table.item(row, 5)
-        raw = meta_item.data(Qt.ItemDataRole.UserRole) if meta_item else ""
+        meta_item = self.findings_table.item(row, 6)
+        meta = meta_item.data(Qt.ItemDataRole.UserRole) if meta_item else {}
+        if not isinstance(meta, dict):
+            meta = {"raw": meta or ""}
         return {
             "index": row + 1,
             "url": vals[1] if len(vals) > 1 else "",
             "payload": vals[2] if len(vals) > 2 else "",
             "vulnerability": vals[3] if len(vals) > 3 else "",
             "response": vals[4] if len(vals) > 4 else "",
-            "raw": raw or "",
+            "verification": vals[5] if len(vals) > 5 else "",
+            **meta,
         }
+
+    def _show_finding_details(self, row, _column):
+        finding = self._finding_row_data(row)
+        if not finding:
+            return
+        from PySide6.QtWidgets import QDialog, QDialogButtonBox
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"Verified Exploit #{finding['index']} — {finding['vulnerability']}")
+        dlg.resize(900, 650)
+        lay = QVBoxLayout(dlg)
+        view = QPlainTextEdit(); view.setReadOnly(True)
+        lines = [
+            f"Vulnerability : {finding.get('vulnerability','')}",
+            f"URL           : {finding.get('url','')}",
+            f"Payload(s)    : {finding.get('payloads') or finding.get('payload','')}",
+            f"Parameter     : {finding.get('parameter','')}",
+            f"Verification  : {finding.get('verification','')}",
+            f"Methodology   : {finding.get('methodology','')}",
+            "",
+            "Response / Evidence:",
+            str(finding.get('response','')),
+            "",
+            "Request snapshot:",
+            str(finding.get('raw','') or finding.get('request_raw','')),
+        ]
+        view.setPlainText("\n".join(lines))
+        lay.addWidget(view, 1)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(dlg.reject)
+        lay.addWidget(buttons)
+        dlg.exec()
 
     def _show_finding_context_menu(self, pos):
         item = self.findings_table.itemAt(pos)
@@ -1249,7 +1253,7 @@ class MainWindow(QMainWindow):
             QApplication.clipboard().setText(finding["payload"])
             self._append_terminal_line("[clipboard] finding payload copied")
         elif chosen == copy_finding:
-            text = f"{finding['url']} | {finding['payload']} | {finding['vulnerability']} | {finding['response']}"
+            text = f"{finding['url']} | {finding['payload']} | {finding['vulnerability']} | {finding['response']} | {finding.get('verification', '')}"
             QApplication.clipboard().setText(text)
             self._append_terminal_line("[clipboard] finding copied")
 
@@ -1261,7 +1265,7 @@ class MainWindow(QMainWindow):
             data = self._finding_row_data(row)
         if not data:
             return
-        raw = data.get("raw", "")
+        raw = data.get("raw", "") or data.get("request_raw", "")
         url = data.get("url", "")
         # A scanner finding is only useful in Repeater when we preserve the
         # request that actually produced the evidence. Never silently reduce
@@ -1296,26 +1300,16 @@ class MainWindow(QMainWindow):
             return
         st=self._new_repeater_tab(raw=raw,title=f"Finding {data['index']}")
         st["url"]=url; st["target"].setText(f"Target: {self.target_url or url}")
-        self.pages.setCurrentIndex(3); self.nav_repeater.setChecked(True); self._sync_repeater_views(); self._append_terminal_line(f"[repeater] opened finding #{data['index']} in new tab")
+        self.pages.setCurrentIndex(2); self.nav_repeater.setChecked(True); self._sync_repeater_views()
+        self._append_terminal_line(f"[repeater] opened verified finding #{data['index']}; replaying exploit request")
+        # Finding -> Repeater is an explicit user action. Replay the exact
+        # exploit request immediately so the real target response is visible.
+        self._repeater_send_request()
 
     def _send_finding_to_terminal(self, finding):
-        if not finding:
-            return
-        url = finding.get("url", "")
-        payload = finding.get("payload", "")
-        vuln = finding.get("vulnerability", "RCE")
-        self.pages.setCurrentIndex(1)
-        self.nav_terminal.setChecked(True)
-        # Load the exploit candidate, but never execute it automatically.
-        if hasattr(self, "terminal_input"):
-            self.terminal_input.setText(payload)
-            self.terminal_input.setFocus()
-        if hasattr(self, "terminal_view"):
-            self.terminal_view.appendPlainText(
-                f"[finding] {vuln}\n[target] {url}\n[payload] {payload}\n"
-                "[action] Payload loaded into terminal; press RUN to execute."
-            )
-        self._append_exploit_output(f"[terminal] finding #{finding['index']} loaded: {url}")
+        """Legacy compatibility stub: Terminal was removed in v3.45."""
+        if hasattr(self, "_append_exploit_output"):
+            self._append_exploit_output("[scanner] Terminal action removed in v3.45.0")
 
     def _attach_code_highlighter(self, widget, mode="http"):
         hl=CtfSyntaxHighlighter(widget.document(), mode=mode)
@@ -1535,7 +1529,7 @@ class MainWindow(QMainWindow):
                     parsed["method"], parsed["url"],
                     headers=parsed["headers"],
                     content=parsed["body"].encode("utf-8", "surrogatepass"),
-                    timeout=20.0, follow_redirects=True, use_curl=False,
+                    timeout=20.0, follow_redirects=True,
                 )
                 return {
                     "status": response.status_code,
@@ -1901,16 +1895,12 @@ class MainWindow(QMainWindow):
             self.brand.setFont(QFont("Sans Serif", 14, QFont.Weight.Bold))
             self.subtitle.hide()
             self.nav_dashboard.setText("⌂")
-            self.nav_terminal.setText(">_")
             self.nav_exploitation.setText("⚡")
             self.nav_repeater.setText("↻")
-            self.nav_intruder.setText("☄")
-            for btn in (self.nav_dashboard, self.nav_terminal, self.nav_exploitation, self.nav_repeater, self.nav_intruder):
+            for btn in (self.nav_dashboard, self.nav_exploitation, self.nav_repeater):
                 if btn is self.nav_dashboard: tip = "Dashboard"
-                elif btn is self.nav_terminal: tip = "Terminal"
                 elif btn is self.nav_exploitation: tip = "Scanner"
-                elif btn is self.nav_repeater: tip = "Repeater"
-                else: tip = "Intruder"
+                else: tip = "Repeater"
                 btn.setToolTip(tip)
                 btn.setMinimumWidth(40)
         else:
@@ -1920,11 +1910,9 @@ class MainWindow(QMainWindow):
             self.brand.setFont(QFont("Sans Serif", 17, QFont.Weight.Bold))
             self.subtitle.show()
             self.nav_dashboard.setText("⌂   Dashboard")
-            self.nav_terminal.setText(">_  Terminal")
             self.nav_exploitation.setText("⚡  Scanner")
             self.nav_repeater.setText("↻  Repeater")
-            self.nav_intruder.setText("☄  Intruder")
-            for btn in (self.nav_dashboard, self.nav_terminal, self.nav_exploitation, self.nav_repeater, self.nav_intruder):
+            for btn in (self.nav_dashboard, self.nav_exploitation, self.nav_repeater):
                 btn.setMinimumWidth(0)
 
     def _switch_page(self, index: int):
@@ -1933,7 +1921,7 @@ class MainWindow(QMainWindow):
     def log(self, text: str):
         if hasattr(self, "output") and self.output is not None:
             self.output.appendPlainText(text)
-        if hasattr(self, "exploit_output") and self.pages.currentIndex() == 2:
+        if hasattr(self, "exploit_output") and self.pages.currentIndex() == 1:
             self.exploit_output.appendPlainText(text)
         if hasattr(self, "terminal_view"):
             self.terminal_view.appendPlainText(text)
@@ -2199,15 +2187,21 @@ class MainWindow(QMainWindow):
         timeout_count = sum(1 for item in results if getattr(item, "status", "") == "timeout")
         self.scan_status_label.setText("DONE" if not timeout_count else f"DONE ({timeout_count} TIMEOUT)")
         self.scan_terminal_hint.setText(
-            f"Scan completed — {len(results)} module(s) executed; all configured payload probes processed."
+            f"Scan completed — {len(results)} module(s) executed; exploit verification completed."
         )
         self._append_exploit_output("")
         self._append_exploit_output("[+] Vulnerability scan complete")
         payloads = artifacts.get("payloads.summary", {}) if isinstance(artifacts, dict) else {}
         if payloads:
             total = sum(int(v) for v in payloads.values())
-            self._append_exploit_output(f"[+] Payload inventory: {total} base payload(s)")
+            self._append_exploit_output(f"[+] Payload inventory: {total} configured payload(s)")
             self._append_exploit_output("    " + " | ".join(f"{k}: {v}" for k, v in payloads.items()))
+        coverage = artifacts.get("scanner.payload_coverage", {}) if isinstance(artifacts, dict) else {}
+        if coverage:
+            executed = sum(1 for bucket in coverage.values() if isinstance(bucket, list) for row in bucket if isinstance(row, dict) and row.get("executed"))
+            verified = sum(1 for bucket in coverage.values() if isinstance(bucket, list) for row in bucket if isinstance(row, dict) and row.get("status") == "finding")
+            not_observed = sum(1 for bucket in coverage.values() if isinstance(bucket, list) for row in bucket if isinstance(row, dict) and row.get("status") == "not-observed")
+            self._append_exploit_output(f"[+] Payload execution ledger: executed={executed} | verified={verified} | not-observed={not_observed}")
         for item in results:
             status = getattr(item, "status", "")
             module = getattr(item, "module", "")
@@ -2225,6 +2219,7 @@ class MainWindow(QMainWindow):
                     finding.get("vulnerability", ""),
                     finding.get("response", ""),
                     finding.get("request_raw", ""),
+                    finding_meta=finding,
                 )
         self._append_terminal_line(f"[+] Findings displayed: {self.findings_table.rowCount()}")
         self._append_terminal_line("[+] Vulnerability scan complete")
@@ -2246,90 +2241,14 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Error", error)
 
     def closeEvent(self, event):
-        """Graceful, non-blocking shutdown for GUI workers.
+        """Immediate hard shutdown requested by the user.
 
-        Never call wait(), terminate(), or worker/UI processing from closeEvent.
-        The Qt event loop stays alive while workers finish, preventing
-        QThread-destroyed-while-running and KeyboardInterrupt-in-closeEvent.
+        No graceful worker wait, timer polling, or QThread cleanup is performed.
+        This intentionally terminates the desktop process immediately.
         """
-        if getattr(self, "_shutdown_requested", False):
-            event.ignore()
-            return
-
-        workers = (getattr(self, "browser_worker", None),
-                   getattr(self, "worker", None),
-                   getattr(self, "_repeater_worker", None))
-        live = [w for w in workers if w is not None and w.isRunning()]
-        if not live:
+        try:
             event.accept()
-            return
+        finally:
+            import os
+            os._exit(0)
 
-        self._shutdown_requested = True
-        spinner = getattr(self, "_exploit_spinner", None)
-        if spinner is not None:
-            spinner.stop()
-
-        browser = getattr(self, "browser_worker", None)
-        if browser is not None and browser.isRunning():
-            try:
-                browser.set_intercept(False)
-                browser.close_browser()
-            except Exception as exc:
-                try:
-                    self.log(f"[!] Browser shutdown request: {exc}")
-                except Exception:
-                    pass
-
-        for worker in (getattr(self, "worker", None), getattr(self, "_repeater_worker", None)):
-            if worker is not None and worker.isRunning():
-                try:
-                    worker.requestInterruption()
-                except Exception:
-                    pass
-
-        try:
-            self.setEnabled(False)
-        except Exception:
-            pass
-
-        # QTimer polling avoids blocking the GUI thread. Do not invoke any
-        # worker cleanup directly from closeEvent beyond the stop request.
-        self._shutdown_timer = QTimer(self)
-        self._shutdown_timer.setInterval(50)
-        self._shutdown_timer.timeout.connect(self._poll_shutdown)
-        self._shutdown_timer.start()
-
-        self._shutdown_deadline = QTimer(self)
-        self._shutdown_deadline.setSingleShot(True)
-        self._shutdown_deadline.setInterval(10000)
-        self._shutdown_deadline.timeout.connect(self._shutdown_timeout)
-        self._shutdown_deadline.start()
-        event.ignore()
-
-    def _poll_shutdown(self):
-        workers = (getattr(self, "browser_worker", None),
-                   getattr(self, "worker", None),
-                   getattr(self, "_repeater_worker", None))
-        if any(w is not None and w.isRunning() for w in workers):
-            return
-        self._finish_shutdown()
-
-    def _shutdown_timeout(self):
-        # Diagnostic only: never force-kill a live thread.
-        try:
-            self.log("[!] Shutdown is still waiting for workers; no force-kill performed")
-        except Exception:
-            pass
-
-    def _finish_shutdown(self):
-        if getattr(self, "_shutdown_timer", None) is not None:
-            self._shutdown_timer.stop()
-            self._shutdown_timer.deleteLater()
-            self._shutdown_timer = None
-        if getattr(self, "_shutdown_deadline", None) is not None:
-            self._shutdown_deadline.stop()
-            self._shutdown_deadline.deleteLater()
-            self._shutdown_deadline = None
-        app = QApplication.instance()
-        if app is not None:
-            app.quit()

@@ -1,6 +1,6 @@
 # Source Layout
 
-The v3.42.2 source is intentionally kept as a single Python/PySide6 desktop application.
+The v3.45.0 source is intentionally kept as a single Python/PySide6 desktop application.
 The desktop UI, scanner behavior, repeater behavior, browser/session handling, and module
 set are unchanged by the source-cleanup pass.
 

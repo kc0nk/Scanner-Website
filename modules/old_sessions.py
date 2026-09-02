@@ -237,7 +237,7 @@ class OldSessionsModule(ExploitModule):
                     "Accept": "*/*",
                 },
                 follow_redirects=False,
-                use_curl=True,
+                
             )
         except Exception as exc:
             return ExploitResult(

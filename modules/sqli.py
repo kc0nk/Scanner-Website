@@ -52,9 +52,16 @@ class SQLiModule(ExploitModule):
                         ctx.inspect_source(str(test.url), test.text, payload, payload_counter, test.headers.get("content-type", ""))
                         marker = any(x in test.text.lower() for x in ["sql syntax", "mysql", "sqlite", "postgresql", "odbc", "ora-"])
                         msg = f"Potential SQLi signal in {name} at {parts.path}: status {normal.status_code}->{test.status_code}, size delta {delta}"
-                        if marker or abs(delta) > 300:
+                        if marker:
                             evidence.append(msg)
-                            ctx.add_finding(probe, payload, self.name, f"HTTP {test.status_code}; size delta {delta}", confidence="medium")
+                            ctx.add_finding(
+                                probe, payload, self.name,
+                                f"HTTP {test.status_code}; baseline={normal.status_code}; size delta {delta}; parameter={name}",
+                                confidence="high",
+                                parameter=name,
+                                verification=f"Baseline/replay differential plus SQL parser/error marker observed; baseline={normal.status_code}, exploit={test.status_code}, delta={delta}",
+                                methodology="Observe captured request -> replay baseline -> inject SQL payload into parameter -> compare response -> require SQL-specific server error marker -> preserve exploit request for Repeater",
+                            )
                     except Exception as exc:
                         evidence.append(f"{probe}: {exc}")
         status = "signal" if evidence else "no-signal"

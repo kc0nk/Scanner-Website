@@ -26,5 +26,12 @@ The scanner registry includes JWT, XSS, SQLi, CSRF, CORS, 403 bypass, backup/sen
 ## v3.41 payload coverage
 All payload packs in `core/payloads.py` are now represented by active scanner modules, including Security Headers and CORS / Header Differential. The scanner keeps processing every payload applicable to discovered request surfaces; findings never terminate a payload loop or module. FULL ORIGINAL REQUEST is the default transport policy.
 
-## v3.42 advanced coverage
+## v3.45 exploit verification and payload coverage
+
+The scanner uses observed requests as the source of truth, executes applicable public CTF/web-testing payloads, verifies technique-specific impact before promoting a finding, and preserves the exploit request, payload set, parameter, response evidence, and methodology for Repeater. Document upload checks include benign HTML/SVG/XML/PDF/CSV canaries. The scanner does not search for or extract challenge flags.
+
+## v3.43 advanced coverage
 The scanner includes additional CTF-oriented technique inventories for GraphQL, host-header/reverse-proxy behavior, cache-key anomalies, WebSocket surfaces, advanced HTTP desync indicators, business-logic workflows, mass assignment, OAuth/OIDC, race conditions, deserialization, and LDAP/XPath/XML injection. High-impact desync/state-changing actions are marked for manual confirmation rather than automatically replayed.
+
+### v3.45.0 — Scanner reset
+The Scanner is intentionally an empty shell while the exploitation workflow is rebuilt. Terminal and Intruder are removed from the navigation. Repeater remains available for manual request/response work.

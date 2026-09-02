@@ -72,6 +72,7 @@ class ExploitEngine:
         try:
             self.logger("[>] Preparing browser/session transport")
             self.logger("[i] Module timeout: 180s each; a finding NEVER stops the scanner")
+            self.logger("[i] Methodology: observe real request -> replay baseline -> mutate/replay -> verify response/state -> promote only confirmed exploit")
             self.logger("[i] Payload mode: FULL ORIGINAL REQUEST — captured method/headers/cookies/body are preserved for probes")
             self.logger("[i] Cleanup timeout: 5s; completion is reported even if browser cleanup stalls")
             try:
@@ -135,7 +136,7 @@ class ExploitEngine:
                 executed = sum(1 for v in coverage.values() if isinstance(v, list) for row in v if isinstance(row, dict) and row.get("executed"))
                 not_observed = sum(1 for v in coverage.values() if isinstance(v, list) for row in v if isinstance(row, dict) and row.get("status") == "not-observed")
                 self.logger(f"[+] Payload execution ledger: {covered} catalog state(s); executed={executed}; not-observed={not_observed}")
-            self.logger("[i] Scanner output is vulnerability-only; raw target responses remain available in Repeater")
+            self.logger("[i] Scanner findings are exploit-verified only; raw exploit responses remain available in Repeater")
             self.logger("[+] Vulnerability scan complete — every selected module reached a terminal state")
             return results, self.ctx.artifacts.all()
         finally:

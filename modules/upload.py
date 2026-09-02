@@ -20,7 +20,7 @@ class FileUploadModule(ExploitModule):
                 try:
                     body=b"CTF-Workbench upload probe v3\n"
                     # Raw multipart support is intentionally delegated to httpx only for this module.
-                    resp=await ctx.http.request("POST",action,headers={"Content-Type":"application/octet-stream","X-Filename":filename},content=body,use_curl=False)
+                    resp=await ctx.http.request("POST",action,headers={"Content-Type":"application/octet-stream","X-Filename":filename},content=body)
                     ctx.inspect_source(str(resp.url),resp.text,filename,i,resp.headers.get("content-type",""))
                     evidence.append(f"{action} [{filename}] -> {resp.status_code}, {len(resp.text)} bytes")
                     low = resp.text.lower()

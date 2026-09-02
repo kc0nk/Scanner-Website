@@ -30,6 +30,8 @@ from modules.advanced_http import AdvancedHTTPModule
 from modules.business_logic import BusinessLogicModule
 from modules.api_mass_assignment import APIMassAssignmentModule
 from modules.advanced_inventory import AdvancedInventoryModule
+from modules.deep_payload_matrix import DeepPayloadMatrixModule
+from modules.upload_documents import DocumentUploadModule
 
 ALL_MODULES = [
     ReconModule, HTTPMethodsModule, OldSessionsModule, SQLiModule, IDORModule, LFIModule, SSTIModule,
@@ -37,5 +39,5 @@ ALL_MODULES = [
     AuthBypassModule, NoSQLModule, JWTModule, PrototypePollutionModule, HPPModule, CSRFModule,
     CORSModule, CORSDifferentialModule, SecurityHeadersModule,
     Bypass403Module, BackupSensitiveFilesModule, GraphQLModule, HostHeaderModule, CacheModule,
-    WebSocketModule, AdvancedHTTPModule, BusinessLogicModule, APIMassAssignmentModule, AdvancedInventoryModule,
+    WebSocketModule, AdvancedHTTPModule, BusinessLogicModule, APIMassAssignmentModule, AdvancedInventoryModule, DeepPayloadMatrixModule, DocumentUploadModule,
 ]

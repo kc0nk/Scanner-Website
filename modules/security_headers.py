@@ -33,13 +33,8 @@ class SecurityHeadersModule(ExploitModule):
                 # Missing defensive headers are reported as hardening findings,
                 # but never interrupt the remaining header checks.
                 if not present:
-                    findings += 1
-                    ctx.add_finding(
-                        endpoint,
-                        header_name,
-                        self.name,
-                        f"HTTP {r.status_code}; response does not include {header_name}",
-                        confidence="low",
-                    )
-        status = "signal" if findings else "no-signal"
+                    # Missing defensive headers are hardening observations, not
+                    # confirmed exploits. Keep them out of Vulnerability Findings.
+                    ctx.artifacts.set("security_headers.missing", True)
+        status = "no-signal"
         return ExploitResult(self.name, status, f"Security-header checks completed ({len(payloads)} payloads)", evidence="\n".join(evidence[:50]))

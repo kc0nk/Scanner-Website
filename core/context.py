@@ -173,38 +173,65 @@ class ExploitContext:
         self.artifacts.set("scanner.payload_coverage", coverage)
         return bucket
 
-    def add_finding(self, url, payload, vulnerability, response, *, confidence="medium", terminal_ready=False, request_raw=""):
-        """Record a concrete finding and retain the exact request snapshot for replay.
+    def add_finding(self, url, payload, vulnerability, response, *, confidence="medium", terminal_ready=False, request_raw="", parameter="", verification="", methodology=""):
+        """Record a verified exploit evidence item without flooding the UI.
 
-        Scanner modules generally call this immediately after the probe request that
-        produced the evidence. SessionHttpClient therefore keeps the last effective
-        request (method, URL, headers, body, raw HTTP) so the UI can later clone the
-        real request into Repeater instead of reconstructing a minimal GET/Host pair.
+        Only high-confidence evidence is promoted to ``findings.detected``.
+        Lower-confidence observations are retained separately as candidates.
+        Findings are aggregated by URL + vulnerability so many payload hits do
+        not spam the Dashboard. The effective request/response pair is retained
+        for one-click replay in Repeater.
         """
-        if not request_raw:
-            snap = getattr(self.http, "last_request_snapshot", None)
-            if isinstance(snap, dict):
-                request_raw = snap.get("raw", "")
+        confidence = str(confidence or "medium").lower()
         snap = getattr(self.http, "last_request_snapshot", None)
+        if not request_raw and isinstance(snap, dict):
+            request_raw = snap.get("raw", "")
         finding = {
             "url": str(url or ""),
             "payload": str(payload or ""),
+            "payloads": [str(payload or "")] if payload else [],
             "vulnerability": str(vulnerability or ""),
             "response": str(response or ""),
-            "confidence": str(confidence or "medium"),
+            "confidence": confidence,
+            "verified": confidence == "high" or bool(terminal_ready),
             "terminal_ready": bool(terminal_ready),
             "request_raw": str(request_raw or ""),
             "request_method": str((snap or {}).get("method") or "GET"),
             "request_headers": dict((snap or {}).get("headers") or {}),
             "request_body": (snap or {}).get("body", b""),
             "request_mode": "FULL ORIGINAL REQUEST" if snap else "fallback",
+            "parameter": str(parameter or ""),
+            "verification": str(verification or ""),
+            "methodology": str(methodology or f"Observe baseline -> mutate payload -> replay -> verify technique-specific evidence; payload={payload}"),
         }
+        if confidence != "high" and not terminal_ready:
+            candidates = self.artifacts.get("findings.candidates", []) or []
+            candidates.append(finding)
+            self.artifacts.set("findings.candidates", candidates[-200:])
+            return finding
+
         findings = self.artifacts.get("findings.detected", []) or []
-        # Stable de-duplication by URL/vuln/payload.
-        key = (finding["url"], finding["vulnerability"], finding["payload"])
-        if not any((f.get("url"), f.get("vulnerability"), f.get("payload")) == key for f in findings if isinstance(f, dict)):
-            findings.append(finding)
-            self.artifacts.set("findings.detected", findings[-100:])
+        key = (finding["url"], finding["vulnerability"])
+        existing = next((f for f in findings if isinstance(f, dict) and
+                         (f.get("url"), f.get("vulnerability")) == key), None)
+        if existing is not None:
+            payloads = list(existing.get("payloads") or [])
+            if finding["payload"] and finding["payload"] not in payloads:
+                payloads.append(finding["payload"])
+            existing["payloads"] = payloads[-20:]
+            existing["payload"] = existing["payload"] or finding["payload"]
+            existing["response"] = finding["response"] or existing.get("response", "")
+            existing["request_raw"] = finding["request_raw"] or existing.get("request_raw", "")
+            existing["request_method"] = finding["request_method"]
+            existing["request_headers"] = finding["request_headers"]
+            existing["request_body"] = finding["request_body"]
+            existing["verified"] = True
+            existing["parameter"] = finding.get("parameter", existing.get("parameter", ""))
+            existing["verification"] = finding.get("verification", existing.get("verification", ""))
+            existing["methodology"] = finding.get("methodology", existing.get("methodology", ""))
+            return existing
+        findings.append(finding)
+        self.artifacts.set("findings.detected", findings[-100:])
         return finding
 
     def inspect_source(self, url: str, source: str, payload: str | None = None, payload_index: int | None = None, content_type: str = ""):

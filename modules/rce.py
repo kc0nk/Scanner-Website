@@ -35,7 +35,13 @@ class RCEModule(ExploitModule):
                         evidence.append(f"{probe} -> {r.status_code}, {len(r.text)} bytes")
                         if delta:
                             finding={"url":probe,"payload":payload,"vulnerability":self.name,"response":f"HTTP {r.status_code}, {len(r.text)} bytes","confirmed":True,"terminal_ready":True}
-                            ctx.add_finding(probe, payload, self.name, f"HTTP {r.status_code}, execution marker observed", confidence="high", terminal_ready=True)
+                            ctx.add_finding(
+                                probe, payload, self.name,
+                                f"HTTP {r.status_code}, execution marker observed; parameter={name}",
+                                confidence="high", terminal_ready=True, parameter=name,
+                                verification="Command execution marker appeared only after payload mutation relative to baseline",
+                                methodology="Observe captured command-like request -> replay baseline -> inject command payload -> compare execution markers -> promote confirmed execution -> open Terminal without auto-running",
+                            )
                             ctx.logger(f"[VULN] {self.name} confirmed: {probe}")
                             ctx.logger("[terminal] exploit candidate ready; no flag scanning; continuing remaining RCE probes")
                             ctx.artifacts.set("execution.rce", finding)

@@ -1,15 +1,25 @@
-# Desktop v3.42.2 fixed
+# Desktop v3.45.0
 
-## Critical fixes
-- Fixed a runtime-breaking `SessionHttpClient._build_request_snapshot()` call mismatch: scanner requests were passing `captured_raw=` to a function that did not accept it, causing request/snapshot generation to fail before or during probes.
-- Fixed request snapshot correctness: after a payload mutates URL/body/headers, the Repeater snapshot is reconstructed from the effective request instead of incorrectly reusing the unmodified captured raw request.
-- Fixed application-version drift: `app/main.py` now reads `app.version.__version__` instead of hard-coding an older v3.40 value.
-- Removed the JWT candidate string `flag` so the weak-secret list is not confused with challenge-flag hunting.
+- Removed the legacy external CLI transport; HTTP transport remains HTTPX/Playwright.
+- Scanner methodology follows observed-request workflow: capture -> replay baseline -> controlled replay/mutation -> verify impact -> promote only confirmed exploit evidence.
+- Business Logic / Workflow now verifies duplicate voucher/redeem behavior from captured traffic and performs at most one controlled replay per unique observed workflow.
+- A verified workflow finding stores the follow-up authenticated response request for Scanner -> Repeater, so the real server response is replayed there without any flag extraction logic.
+- Low-confidence inventory observations remain candidates and are not promoted into Vulnerability Findings.
+- Duplicate findings are aggregated by URL + vulnerability.
+- Dashboard/Finding table columns remain interactive and can be resized.
+- Close action remains immediate hard-exit; obsolete graceful-shutdown helpers removed.
+- Desktop UI/layout and existing module set are otherwise preserved.
 
-## Existing v3.42 safeguards retained
-- Removed legacy flag-hunting infrastructure (`core/flag.py`, `Target.flag_format`, `ExploitResult.flags`, legacy flag UI hook).
-- FULL ORIGINAL REQUEST remains the default scanner transport; captured request context is retained and effective request snapshots are replayable.
-- Duplicate nested project tree removed; archive has one project root.
-- Payload coverage ledger records executed/not-observed states and is reconciled at module completion.
-- Findings never stop the scan; each selected module has a bounded execution deadline.
-- RCE findings route to Terminal and never auto-execute commands.
+- v3.45 expands the central CTF payload catalog and adds a Deep Payload Matrix module that executes applicable payloads on observed request surfaces.
+- Vulnerability Findings now retain methodology, parameter, verification evidence, payload set, and the exact exploit request snapshot.
+- Finding rows expose a Verification column and a double-click methodology/evidence view.
+- Added document-upload verification canaries for HTML/SVG/XML/PDF/CSV; only browser-active HTML/SVG behavior is promoted automatically.
+- Payload execution totals are reported from the execution ledger; the UI no longer claims every catalog payload ran when it did not.
+
+## v3.45.0 Scanner Reset
+
+- Scanner UI intentionally reset to an empty workspace for rebuild.
+- Scanner payload catalog/exploit-command workflow is not exposed in the UI.
+- Terminal navigation/action was removed.
+- Intruder navigation/page was removed.
+- Dashboard and Repeater remain available.

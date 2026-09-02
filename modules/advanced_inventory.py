@@ -33,9 +33,7 @@ class AdvancedInventoryModule(ExploitModule):
                 ctx.mark_payload(self.name, f"{pack}: {payload}", "not-applicable" if not signal else "tested",
                                  "surface discovered; manual payload confirmation required" if signal else "no matching surface")
                 evidence.append(f"{pack} / {payload} -> {'manual-confirmation' if signal else 'not-applicable'}")
-                if signal and payload in {get_payloads(pack)[0] if get_payloads(pack) else ""}:
-                    findings += 1
-                    ctx.add_finding(ctx.session.current_url or ctx.target.url, f"{pack}: {payload}", pack,
-                                    "Advanced surface discovered; active exploitation intentionally requires manual confirmation",
-                                    confidence="low")
+                # Inventory/manual-confirmation signals are deliberately not
+                # promoted into Vulnerability Findings.
+
         return ExploitResult(self.name, "signal" if findings else "no-signal", "Advanced technique inventory completed", evidence="\n".join(evidence[:80]))

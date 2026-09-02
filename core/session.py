@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import random
-import shutil
-import subprocess
 from typing import Any
 from urllib.parse import urlparse
 
@@ -71,9 +69,8 @@ class SessionHttpClient:
     Strategy:
       1. Prime a persistent Playwright browser context so JavaScript challenges
          (for example /jwt/?i=1 -> JS cookie -> /jwt/?i=2) are actually executed.
-      2. Prefer curl/httpx when they work with the primed cookies.
-      3. Fall back to the same persistent browser context via context.request,
-         which supports headers without abusing Page.goto().
+      2. Use httpx for HTTP requests and the persistent browser context when
+         browser-compatible transport is required.
 
     The browser context is intentionally reused for the whole scan so cookies
     set by JavaScript remain available to subsequent probes.
@@ -164,7 +161,7 @@ class SessionHttpClient:
             return
         cookies = await self._browser_context.cookies()
         self.snapshot.cookies = cookies
-        # Keep the httpx/curl cookie jar in sync as well.
+        # Keep the HTTP client cookie jar in sync as well.
         self.client.cookies.clear()
         for c in cookies:
             try:
@@ -176,9 +173,8 @@ class SessionHttpClient:
         """Execute the target's JavaScript bootstrap/challenge once.
 
         This is critical for targets whose first response is a JS challenge that
-        sets a cookie and redirects to the real application page. A raw curl
-        request cannot execute that JavaScript and therefore keeps seeing the
-        challenge page.
+        sets a cookie and redirects to the real application page. A plain HTTP client cannot execute that JavaScript, so the browser
+        context is used for session bootstrap.
         """
         if self._browser_primed:
             return
@@ -208,56 +204,6 @@ class SessionHttpClient:
         )
         self._browser_primed = True
 
-    async def _curl_request(self, method: str, url: str, **kwargs: Any):
-        if not shutil.which("curl"):
-            raise RuntimeError("curl binary is not installed")
-        headers = dict(kwargs.pop("headers", {}) or {})
-        content = kwargs.pop("content", None)
-        timeout = float(kwargs.pop("timeout", self.timeout))
-        follow_redirects = bool(kwargs.pop("follow_redirects", True))
-        if kwargs:
-            raise RuntimeError(f"curl fallback does not support options: {', '.join(kwargs)}")
-        try:
-            cookie_items = list(self.client.cookies.items())
-        except Exception:
-            cookie_items = []
-        if cookie_items and "Cookie" not in {str(k).title() for k in headers}:
-            headers["Cookie"] = "; ".join(f"{k}={v}" for k,v in cookie_items)
-        cmd=["curl","--silent","--show-error","--include","--request",method.upper(),"--max-time",str(max(1,int(timeout))),"--compressed"]
-        if follow_redirects: cmd.append("--location")
-        else: cmd += ["--max-redirs","0"]
-        for key,value in headers.items(): cmd += ["--header",f"{key}: {value}"]
-        if content is not None:
-            data = content if isinstance(content,bytes) else str(content).encode()
-            proc=await asyncio.to_thread(subprocess.run, cmd+[url], input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-        else:
-            proc=await asyncio.to_thread(subprocess.run, cmd+[url], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-        if proc.returncode != 0:
-            raise RuntimeError(proc.stderr.decode("utf-8","replace").strip() or f"curl exit {proc.returncode}")
-        raw=proc.stdout
-        # Walk the header chain so redirects/challenge responses are parsed safely.
-        chunks=raw.split(b"\r\n\r\n")
-        if len(chunks)==1: chunks=raw.split(b"\n\n")
-        block=chunks[0]
-        body=chunks[-1] if len(chunks)>1 else b""
-        # If curl followed redirects, the last status block precedes final body.
-        for candidate in reversed(chunks[:-1]):
-            if candidate.startswith(b"HTTP/"):
-                block=candidate; break
-        lines=block.splitlines()
-        while lines and not lines[0].startswith(b"HTTP/"):
-            lines.pop(0)
-        if not lines: raise RuntimeError("curl returned no HTTP status line")
-        status_line=lines[0].decode("iso-8859-1","replace")
-        try: status_code=int(status_line.split()[1])
-        except Exception as exc: raise RuntimeError(f"unable to parse curl status line: {status_line!r}") from exc
-        headers_out={}
-        for line in lines[1:]:
-            if b":" not in line: continue
-            key,value=line.split(b":",1)
-            headers_out[key.decode("iso-8859-1","replace").strip()]=value.decode("iso-8859-1","replace").strip()
-        return httpx.Response(status_code,headers=headers_out,content=body,request=httpx.Request(method,url))
-
     async def _browser_request(self, method: str, url: str, **kwargs: Any):
         context = await self._ensure_browser()
         if not self._browser_primed:
@@ -285,6 +231,30 @@ class SessionHttpClient:
         # so sync them after every request.
         await self._sync_browser_cookies()
         return httpx.Response(response.status, headers=hdrs, content=body, request=httpx.Request(method,url))
+
+    def _snapshot_from_prepared(self, prepared, captured_raw: str | None = None):
+        try:
+            body = prepared.read() or b""
+        except Exception:
+            body = prepared.content or b""
+        effective = {str(k): str(v) for k, v in prepared.headers.multi_items()}
+        parsed = urlparse(str(prepared.url))
+        target = parsed.path or "/"
+        if parsed.query:
+            target += "?" + parsed.query
+        lines = [f"{prepared.method.upper()} {target} HTTP/1.1"]
+        lines.extend(f"{k}: {v}" for k, v in prepared.headers.multi_items())
+        raw = "\n".join(lines) + "\n\n"
+        raw += body.decode("utf-8", "replace")
+        return {
+            "method": prepared.method.upper(),
+            "url": str(prepared.url),
+            "headers": effective,
+            "body": body,
+            "raw": raw,
+            "captured_raw": bool(captured_raw),
+            "original_raw": str(captured_raw or ""),
+        }
 
     def _build_request_snapshot(self, method: str, url: str, headers: dict[str, Any] | None, content: Any = None, captured_raw: str | None = None):
         # Preserve browser-like defaults so Scanner -> Repeater gets a faithful
@@ -342,7 +312,7 @@ class SessionHttpClient:
         replayed unchanged except for the requested payload mutation.
         """
         explicit_original = kwargs.pop("original_request", None)
-        use_curl=bool(kwargs.pop("use_curl", True))
+        multipart_files = kwargs.get("files")
         # FULL ORIGINAL REQUEST is the default scanner transport policy.
         # A captured request is used as the base and explicit module headers/body
         # are merged on top as the payload mutation. This keeps method, cookies,
@@ -361,9 +331,20 @@ class SessionHttpClient:
                     kwargs["content"] = resolved.get("body")
                 explicit_original = resolved
         captured_raw = (explicit_original or {}).get("raw") if isinstance(explicit_original, dict) else None
-        self.last_request_snapshot = self._build_request_snapshot(
-            method, url, kwargs.get("headers"), kwargs.get("content"), captured_raw=captured_raw
-        )
+        if multipart_files is not None:
+            # Prepare multipart once so the scanner/repeater snapshot contains the
+            # actual encoded body, boundary, and headers sent over HTTP.
+            try:
+                prepared = self.client.build_request(method, url, **kwargs)
+                self.last_request_snapshot = self._snapshot_from_prepared(prepared, captured_raw=captured_raw)
+            except Exception:
+                self.last_request_snapshot = self._build_request_snapshot(
+                    method, url, kwargs.get("headers"), kwargs.get("content"), captured_raw=captured_raw
+                )
+        else:
+            self.last_request_snapshot = self._build_request_snapshot(
+                method, url, kwargs.get("headers"), kwargs.get("content"), captured_raw=captured_raw
+            )
         # Prime once up front. This turns the raw /jwt/?i=1 JS challenge into
         # the real browser session before any scanner payload is sent.
         try:
@@ -371,31 +352,29 @@ class SessionHttpClient:
         except Exception as exc:
             self.logger(f"[!] Browser session priming failed: {exc}")
 
-        if use_curl:
-            try:
-                self.logger(f"[curl] {method.upper()} {url}")
-                response=await self._curl_request(method,url,**dict(kwargs))
-                self.logger(f"[curl] {method.upper()} {url} -> {response.status_code}, {len(response.content)} bytes")
-            except (httpx.HTTPError,OSError,RuntimeError) as exc:
-                self.logger(f"[!] HTTP client error for {url}: {exc}")
-                self.logger(f"[~] Browser transport: {method.upper()} {url}")
-                response=await self._browser_request(method,url,**dict(kwargs))
-                self.logger(f"[browser-fetch] {method.upper()} {url} -> {response.status_code}, {len(response.content)} bytes")
-        else:
-            try:
-                response=await self.client.request(method,url,**kwargs)
-            except (httpx.HTTPError,OSError) as exc:
-                self.logger(f"[!] httpx error for {url}: {exc}")
-                response=await self._browser_request(method,url,**dict(kwargs))
-                self.logger(f"[browser-fetch] {method.upper()} {url} -> {response.status_code}, {len(response.content)} bytes")
+        try:
+            response=await self.client.request(method,url,**kwargs)
+        except (httpx.HTTPError,OSError) as exc:
+            self.logger(f"[!] httpx error for {url}: {exc}")
+            self.logger(f"[~] Browser transport: {method.upper()} {url}")
+            response=await self._browser_request(method,url,**dict(kwargs))
+            self.logger(f"[browser-fetch] {method.upper()} {url} -> {response.status_code}, {len(response.content)} bytes")
 
         # Refresh the replay snapshot after transport, because bootstrap/session
         # cookies may have changed during the request path. Keep the exact headers
         # the module supplied plus the current cookie jar.
-        self.last_request_snapshot = self._build_request_snapshot(
-            method, url, kwargs.get("headers"), kwargs.get("content"), captured_raw=captured_raw
-        )
-        last_response=response
+        if multipart_files is not None:
+            try:
+                prepared = self.client.build_request(method, url, **kwargs)
+                self.last_request_snapshot = self._snapshot_from_prepared(prepared, captured_raw=captured_raw)
+            except Exception:
+                self.last_request_snapshot = self._build_request_snapshot(
+                    method, url, kwargs.get("headers"), kwargs.get("content"), captured_raw=captured_raw
+                )
+        else:
+            self.last_request_snapshot = self._build_request_snapshot(
+                method, url, kwargs.get("headers"), kwargs.get("content"), captured_raw=captured_raw
+            )
         status=response.status_code
         server=(response.headers.get("server") or "").lower()
         body_prefix=""
