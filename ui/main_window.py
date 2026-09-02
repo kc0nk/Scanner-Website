@@ -77,49 +77,50 @@ class MainWindow(QMainWindow):
 
     def dashboard(self):
         s,l=self.page()
-        # Clean reference-style dashboard: compact welcome panel, then project URL input.
+        # Compact reference-style dashboard.
         hero=QFrame(); hero.setObjectName("panel")
-        hl=QHBoxLayout(hero); hl.setContentsMargins(24,18,24,18); hl.setSpacing(18)
-
-        left=QVBoxLayout(); left.setSpacing(7)
+        hl=QHBoxLayout(hero); hl.setContentsMargins(24,16,24,16); hl.setSpacing(18)
+        left=QVBoxLayout(); left.setSpacing(6)
         tag=QLabel("●  SYSTEM ACTIVE")
         tag.setStyleSheet(f"color:{GREEN};background:#062c2a;border:1px solid #0d6157;border-radius:15px;padding:5px 10px;")
-        tag.setFixedWidth(150)
-        left.addWidget(tag)
+        tag.setFixedWidth(150); left.addWidget(tag)
         hi=QLabel("Hello, <font color='#3b9bff'>hackers01</font> 👋")
-        hi.setStyleSheet("font-size:25px;font-weight:800;")
-        left.addWidget(hi)
-        hl.addLayout(left,1)
-
-        divider=QFrame(); divider.setFrameShape(QFrame.VLine); divider.setFrameShadow(QFrame.Plain)
-        divider.setStyleSheet(f"color:{BORDER};background:{BORDER};max-width:1px;")
-        hl.addWidget(divider)
-
-        p=QPushButton("↗  Open Project")
-        p.setObjectName("primary")
-        p.clicked.connect(lambda:self.show_page("Web Analyzer"))
-        p.setMinimumWidth(155)
-        hl.addWidget(p)
+        hi.setStyleSheet("font-size:25px;font-weight:800;"); left.addWidget(hi)
+        hl.addLayout(left); hl.addStretch()
         l.addWidget(hero)
 
         url_card=QFrame(); url_card.setObjectName("card")
-        ul=QVBoxLayout(url_card); ul.setContentsMargins(18,16,18,16); ul.setSpacing(9)
+        ul=QVBoxLayout(url_card); ul.setContentsMargins(18,14,18,14); ul.setSpacing(8)
         label=QLabel("PROJECT URL")
-        label.setStyleSheet(f"color:{MUTED};font-size:10px;font-weight:700;letter-spacing:2px;")
-        ul.addWidget(label)
+        label.setStyleSheet(f"color:{MUTED};font-size:10px;font-weight:700;letter-spacing:2px;"); ul.addWidget(label)
         row=QHBoxLayout(); row.setSpacing(10)
-        self.dashboard_url=QLineEdit()
-        self.dashboard_url.setPlaceholderText("https://target.example")
-        self.dashboard_url.returnPressed.connect(self.open_dashboard_target)
-        row.addWidget(self.dashboard_url,1)
-        open_url=QPushButton("Open")
-        open_url.setObjectName("primary")
-        open_url.clicked.connect(self.open_dashboard_target)
-        row.addWidget(open_url)
-        ul.addLayout(row)
-        l.addWidget(url_card)
+        self.dashboard_url=QLineEdit(); self.dashboard_url.setPlaceholderText("https://target.example")
+        self.dashboard_url.returnPressed.connect(self.open_dashboard_target); row.addWidget(self.dashboard_url,1)
+        open_url=QPushButton("Open"); open_url.setObjectName("primary"); open_url.clicked.connect(self.open_dashboard_target); row.addWidget(open_url)
+        ul.addLayout(row); l.addWidget(url_card)
 
-        l.addStretch()
+        history_card=QFrame(); history_card.setObjectName("card")
+        hv=QVBoxLayout(history_card); hv.setContentsMargins(14,12,14,14); hv.setSpacing(8)
+        hrow=QHBoxLayout(); title=QLabel("HTTP HISTORY"); title.setStyleSheet("font-size:15px;font-weight:800;"); hrow.addWidget(title)
+        self.history_count=QLabel("0 requests"); self.history_count.setStyleSheet(f"color:{MUTED};font-size:11px;"); hrow.addStretch(); hrow.addWidget(self.history_count); hv.addLayout(hrow)
+        self.history_table=QTableWidget(0,9)
+        self.history_table.setHorizontalHeaderLabels(["METHOD","URL","PARAMS","STATUS","LENGTH","MIME TYPE","EDITED","COOKIES","TIME"])
+        self.history_table.setSelectionBehavior(QAbstractItemView.SelectRows); self.history_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.history_table.setAlternatingRowColors(False); self.history_table.setSortingEnabled(False)
+        hh=self.history_table.horizontalHeader(); hh.setSectionResizeMode(0,QHeaderView.ResizeToContents); hh.setSectionResizeMode(1,QHeaderView.Stretch)
+        for i in [2,3,4,5,6,7,8]: hh.setSectionResizeMode(i,QHeaderView.Interactive)
+        self.history_table.setColumnWidth(2,80); self.history_table.setColumnWidth(3,70); self.history_table.setColumnWidth(4,85); self.history_table.setColumnWidth(5,110); self.history_table.setColumnWidth(6,70); self.history_table.setColumnWidth(7,90); self.history_table.setColumnWidth(8,120)
+        self.history_table.setMinimumHeight(150); self.history_table.itemSelectionChanged.connect(self.history_selected)
+        hv.addWidget(self.history_table,1)
+        hint=QLabel("Drag the horizontal splitter below to resize HTTP History. Drag column borders to resize columns.")
+        hint.setStyleSheet(f"color:{MUTED};font-size:10px;"); hv.addWidget(hint)
+
+        details=QSplitter(Qt.Horizontal); details.setChildrenCollapsible(False); details.setMinimumHeight(180)
+        req=QFrame(); req.setObjectName("panel"); rv=QVBoxLayout(req); rv.setContentsMargins(12,10,12,10); rv.addWidget(QLabel("REQUEST")); self.dashboard_request=QPlainTextEdit(); self.dashboard_request.setReadOnly(True); rv.addWidget(self.dashboard_request)
+        resp=QFrame(); resp.setObjectName("panel"); sv=QVBoxLayout(resp); sv.setContentsMargins(12,10,12,10); sv.addWidget(QLabel("RESPONSE")); self.dashboard_response=QPlainTextEdit(); self.dashboard_response.setReadOnly(True); sv.addWidget(self.dashboard_response)
+        details.addWidget(req); details.addWidget(resp); details.setSizes([500,500])
+        hv.addWidget(details,1)
+        l.addWidget(history_card,1)
         return s
 
     def open_dashboard_target(self):
@@ -167,7 +168,20 @@ class MainWindow(QMainWindow):
         for rec in r.requests:
             row=self.table.rowCount();self.table.insertRow(row)
             for col,val in enumerate([rec.method,str(rec.status),rec.url,rec.content_type,str(rec.size)]):self.table.setItem(row,col,QTableWidgetItem(val))
+            hrow=self.history_table.rowCount(); self.history_table.insertRow(hrow)
+            params=urlsplit(rec.url).query
+            vals=[rec.method,rec.url,"Yes" if params else "",str(rec.status),str(rec.size),rec.content_type,"", "", datetime.now().strftime("%H:%M:%S")]
+            for col,val in enumerate(vals): self.history_table.setItem(hrow,col,QTableWidgetItem(val))
+        self.history_count.setText(f"{len(r.requests)} requests")
         self.fill_tab(0,"\n".join(r.site_map));self.fill_tab(2,"\n".join(r.secrets) or "No secret artifacts collected.");self.fill_tab(4,"\n".join(f"{x['method']} {x['action']}" for x in r.forms) or "No forms observed.");self.fill_tab(5,"\n".join(r.js_files) or "No JavaScript files observed.");self.fill_tab(6,"\n".join(r.technologies) or "No technology headers identified.");self.fill_tab(8,"\n".join(r.cookies) or "No cookies observed.");self.ai.setHtml(f"<h2>Analysis complete</h2><p><b>{html.escape(r.target)}</b></p><p>Collected {len(r.requests)} network requests and {len(r.site_map)} in-scope URLs.</p>")
+    def history_selected(self):
+        if not hasattr(self,"history_table") or not self.result:return
+        row=self.history_table.currentRow()
+        if row < 0 or row >= len(self.result.requests):return
+        rec=self.result.requests[row]
+        self.dashboard_request.setPlainText(f"{rec.method} {rec.url}\n\nTarget: {self.result.target}")
+        self.dashboard_response.setPlainText(f"HTTP {rec.status}\n\nContent-Type: {rec.content_type}\nLength: {rec.size}")
+
     def fill_tab(self,index,text):
         w=self.tabs.widget(index);ed=getattr(w,"_editor",None)
         if ed:ed.setPlainText(text)
