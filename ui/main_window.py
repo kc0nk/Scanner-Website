@@ -4,7 +4,7 @@ from datetime import datetime
 from urllib.parse import urlsplit, parse_qsl, urlencode, urlunsplit
 import httpx
 from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtGui import QFont, QColor, QBrush, QPen, QGraphicsRectItem, QGraphicsTextItem, QGraphicsLineItem
+from PySide6.QtGui import QFont, QColor, QBrush, QPen
 from PySide6.QtWidgets import *
 from app.version import __version__
 from core.analyzer import WebAnalyzer, AnalysisResult
@@ -109,16 +109,25 @@ class MainWindow(QMainWindow):
         hh=self.history_table.horizontalHeader(); hh.setSectionResizeMode(0,QHeaderView.ResizeToContents); hh.setSectionResizeMode(1,QHeaderView.Stretch)
         for i in [2,3,4,5,6,7,8]: hh.setSectionResizeMode(i,QHeaderView.Interactive)
         self.history_table.setColumnWidth(2,80); self.history_table.setColumnWidth(3,70); self.history_table.setColumnWidth(4,85); self.history_table.setColumnWidth(5,110); self.history_table.setColumnWidth(6,70); self.history_table.setColumnWidth(7,90); self.history_table.setColumnWidth(8,120)
-        self.history_table.setMinimumHeight(150); self.history_table.itemSelectionChanged.connect(self.history_selected)
-        hv.addWidget(self.history_table,1)
-        hint=QLabel("Drag the horizontal splitter below to resize HTTP History. Drag column borders to resize columns.")
+        self.history_table.setMinimumHeight(110); self.history_table.itemSelectionChanged.connect(self.history_selected)
+
+        hint=QLabel("Drag the divider between HTTP History and Request/Response to resize the history area. Drag column borders to resize columns.")
         hint.setStyleSheet(f"color:{MUTED};font-size:10px;"); hv.addWidget(hint)
+
+        # Vertical splitter: the HTTP History table can be expanded/shrunk like Burp's history pane.
+        history_splitter=QSplitter(Qt.Vertical)
+        history_splitter.setChildrenCollapsible(False)
+        history_splitter.setHandleWidth(8)
+        history_splitter.setMinimumHeight(360)
+        history_splitter.addWidget(self.history_table)
 
         details=QSplitter(Qt.Horizontal); details.setChildrenCollapsible(False); details.setMinimumHeight(180)
         req=QFrame(); req.setObjectName("panel"); rv=QVBoxLayout(req); rv.setContentsMargins(12,10,12,10); rv.addWidget(QLabel("REQUEST")); self.dashboard_request=QPlainTextEdit(); self.dashboard_request.setReadOnly(True); rv.addWidget(self.dashboard_request)
         resp=QFrame(); resp.setObjectName("panel"); sv=QVBoxLayout(resp); sv.setContentsMargins(12,10,12,10); sv.addWidget(QLabel("RESPONSE")); self.dashboard_response=QPlainTextEdit(); self.dashboard_response.setReadOnly(True); sv.addWidget(self.dashboard_response)
         details.addWidget(req); details.addWidget(resp); details.setSizes([500,500])
-        hv.addWidget(details,1)
+        history_splitter.addWidget(details)
+        history_splitter.setSizes([420,260])
+        hv.addWidget(history_splitter,1)
         l.addWidget(history_card,1)
         return s
 
