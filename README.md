@@ -1,14 +1,15 @@
-# CTF Exploit Workbench v2.0.0
+# CTF Exploit Workbench v2.1
 
-Desktop web-analysis workbench built with PySide6.
+## Repeater improvements
 
-## v2.0 browser capture
-
-The Dashboard **Open** button launches a dedicated Google Chrome/Chromium profile with Chrome DevTools Protocol (CDP) enabled. Network activity from pages opened in that dedicated browser profile is captured into **HTTP History**.
-
-Clicking a captured row displays the reconstructed raw HTTP request and response in the Request/Response panes.
-
-The browser profile is intentionally isolated from the user's normal browser profile so the workbench can attach to it reliably without inspecting unrelated Chrome sessions.
+- HTTP History context menu: **Send to Repeater**
+- Double-clicking a browser-captured history row opens it in Repeater.
+- Captured requests preserve method, URL, headers and body.
+- Repeater **Send** executes the edited HTTP request.
+- Repeater **Cancel** requests cooperative cancellation while streaming.
+- Repeater **< / >** navigate previous/next sent response snapshots.
+- Navigation restores request + response + metadata without re-sending.
+- Supports GET, POST, PUT, PATCH, DELETE, HEAD and OPTIONS.
 
 ## Run
 
@@ -16,5 +17,3 @@ The browser profile is intentionally isolated from the user's normal browser pro
 python -m pip install -r requirements.txt
 ./run.sh
 ```
-
-Google Chrome or Chromium must be available in `PATH` (`google-chrome`, `google-chrome-stable`, `chromium`, or `chromium-browser`).

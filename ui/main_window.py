@@ -70,21 +70,51 @@ class Metric(QFrame):
     def setValue(self,v):self.value.setText(str(v))
 
 class RepeaterWorker(QThread):
-    done=Signal(object); failed=Signal(str)
+    done=Signal(object)
+    failed=Signal(str)
+    cancelled=Signal()
+
     def __init__(self, method, url, headers, body):
-        super().__init__(); self.method=method; self.url=url; self.headers=headers; self.body=body; self.stop_requested=False
+        super().__init__()
+        self.method=method.upper()
+        self.url=url
+        self.headers=headers
+        self.body=body
+        self.stop_requested=False
+
     def run(self):
         import time
         started=time.perf_counter()
         try:
-            with httpx.Client(timeout=15,follow_redirects=True,verify=False) as c:
-                r=c.request(self.method,self.url,headers=self.headers,content=self.body.encode() if self.body else None)
-            elapsed=int((time.perf_counter()-started)*1000)
-            status=f"{r.status_code} {r.reason_phrase}"
-            raw=f"{r.http_version} {r.status_code} {r.reason_phrase}\n"+"\n".join(f"{k}: {v}" for k,v in r.headers.items())+"\n\n"+r.text
-            self.done.emit((raw,status,elapsed,len(r.content),str(r.url)))
+            timeout=httpx.Timeout(connect=5.0, read=1.0, write=5.0, pool=5.0)
+            with httpx.Client(timeout=timeout, follow_redirects=True, verify=False) as client:
+                with client.stream(
+                    self.method,
+                    self.url,
+                    headers=self.headers,
+                    content=self.body.encode("utf-8") if self.body else None,
+                ) as response:
+                    chunks=[]
+                    for chunk in response.iter_bytes():
+                        if self.stop_requested:
+                            self.cancelled.emit()
+                            return
+                        chunks.append(chunk)
+                    if self.stop_requested:
+                        self.cancelled.emit()
+                        return
+                    content=b"".join(chunks)
+                    elapsed=int((time.perf_counter()-started)*1000)
+                    status=f"{response.status_code} {response.reason_phrase}"
+                    header_text="\n".join(f"{k}: {v}" for k,v in response.headers.items())
+                    body_text=content.decode("utf-8", errors="replace")
+                    raw=f"{response.http_version} {response.status_code} {response.reason_phrase}\n{header_text}\n\n{body_text}"
+                    self.done.emit((raw,status,elapsed,len(content),str(response.url)))
         except Exception as e:
-            self.failed.emit(str(e))
+            if self.stop_requested:
+                self.cancelled.emit()
+            else:
+                self.failed.emit(str(e))
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -151,6 +181,8 @@ class MainWindow(QMainWindow):
         self.history_table.setColumnWidth(2,80); self.history_table.setColumnWidth(3,70); self.history_table.setColumnWidth(4,85); self.history_table.setColumnWidth(5,110); self.history_table.setColumnWidth(6,70); self.history_table.setColumnWidth(7,90); self.history_table.setColumnWidth(8,120)
         self.history_table.setMinimumHeight(240); self.history_table.itemSelectionChanged.connect(self.history_selected)
         self.history_table.cellDoubleClicked.connect(self.history_to_repeater)
+        self.history_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.history_table.customContextMenuRequested.connect(self._history_context_menu)
 
         hint=QLabel("Drag the divider between HTTP History and Request/Response to resize the history area. Drag column borders to resize columns.")
         hint.setStyleSheet(f"color:{MUTED};font-size:10px;"); hv.addWidget(hint)
@@ -316,7 +348,10 @@ class MainWindow(QMainWindow):
 
     def make_tab(self,name):
         if name=="Network":
-            w=QWidget();vl=QVBoxLayout(w);self.table=QTableWidget(0,5);self.table.setHorizontalHeaderLabels(["METHOD","STATUS","URL","CONTENT TYPE","SIZE"]);self.table.horizontalHeader().setSectionResizeMode(2,QHeaderView.Stretch);self.table.cellDoubleClicked.connect(self.network_to_repeater);vl.addWidget(self.table);return w
+            w=QWidget();vl=QVBoxLayout(w);self.table=QTableWidget(0,5);self.table.setHorizontalHeaderLabels(["METHOD","STATUS","URL","CONTENT TYPE","SIZE"]);self.table.horizontalHeader().setSectionResizeMode(2,QHeaderView.Stretch);self.table.cellDoubleClicked.connect(self.network_to_repeater)
+            self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+            self.table.customContextMenuRequested.connect(self._network_context_menu)
+            vl.addWidget(self.table);return w
         if name=="Payloads":
             w=QWidget();vl=QVBoxLayout(w)
             note=QLabel("All payloads run automatically against discovered request surfaces. No payload selector.")
@@ -368,26 +403,71 @@ class MainWindow(QMainWindow):
             self.dashboard_request.setPlainText(f"{rec.method} {rec.url}\n\nTarget: {self.result.target}")
             self.dashboard_response.setPlainText(f"HTTP {rec.status}\n\nContent-Type: {rec.content_type}\nLength: {rec.size}")
 
-    def history_to_repeater(self,row,_col):
-        if not self.result or row < 0 or row >= len(self.result.requests): return
-        rec=self.result.requests[row]
-        self.network_to_repeater(row,0)
+    def history_to_repeater(self,row,_col=0):
+        if row < 0:
+            return
+        if row < len(self.browser_records):
+            self.open_captured_in_repeater(self.browser_records[row])
+            return
+        if self.result and row < len(self.result.requests):
+            self.network_to_repeater(row,0)
+
+    def _history_context_menu(self, pos):
+        row = self.history_table.rowAt(pos.y())
+        if row < 0:
+            return
+        self.history_table.selectRow(row)
+        menu = QMenu(self)
+        send = menu.addAction("Send to Repeater")
+        send.setIconVisibleInMenu(False)
+        menu.addSeparator()
+        copy_url = menu.addAction("Copy URL")
+        action = menu.exec(self.history_table.viewport().mapToGlobal(pos))
+        if action == send:
+            self.history_to_repeater(row, 0)
+        elif action == copy_url:
+            rec = self.browser_records[row] if row < len(self.browser_records) else None
+            if rec:
+                QApplication.clipboard().setText(rec.url)
+            elif self.result and row < len(self.result.requests):
+                QApplication.clipboard().setText(self.result.requests[row].url)
+
+    def _network_context_menu(self, pos):
+        row = self.table.rowAt(pos.y())
+        if row < 0:
+            return
+        self.table.selectRow(row)
+        menu = QMenu(self)
+        send = menu.addAction("Send to Repeater")
+        copy_url = menu.addAction("Copy URL")
+        action = menu.exec(self.table.viewport().mapToGlobal(pos))
+        if action == send:
+            self.network_to_repeater(row, 0)
+        elif action == copy_url and self.result and row < len(self.result.requests):
+            QApplication.clipboard().setText(self.result.requests[row].url)
 
     def fill_tab(self,index,text):
         w=self.tabs.widget(index);ed=getattr(w,"_editor",None)
         if ed:ed.setPlainText(text)
-    def network_to_repeater(self,row,_col):
-        if not self.result or row>=len(self.result.requests):return
-        rec=self.result.requests[row]
+
+    def network_to_repeater(self,row,_col=0):
+        if not self.result or row<0 or row>=len(self.result.requests):return
+        self.open_analyzer_record_in_repeater(self.result.requests[row])
+
+    def open_analyzer_record_in_repeater(self, rec):
         parsed=urlsplit(rec.url)
         host=parsed.netloc
         path=parsed.path or "/"
-        if parsed.query:path += "?" + parsed.query
-        request=(f"{rec.method} {path} HTTP/2\n"
-                 f"Host: {host}\n"
-                 f"User-Agent: CTF-Exploit-Workbench/1.0\n"
-                 "Accept: */*\n")
-        self.open_repeater(rec.method,rec.url,request,"")
+        if parsed.query:
+            path += "?" + parsed.query
+        headers = {"Host": host, "User-Agent": "CTF-Exploit-Workbench/2.0", "Accept": "*/*"}
+        request=(f"{rec.method} {path} HTTP/1.1\n"
+                 + "\n".join(f"{k}: {v}" for k,v in headers.items()) + "\n\n")
+        self.open_repeater(rec.method, rec.url, request, "")
+
+    def open_captured_in_repeater(self, rec: CapturedTransaction):
+        request = self._captured_request_text(rec)
+        self.open_repeater(rec.method, rec.url, request, "")
 
     def _new_repeater_session(self, method="GET", url="", request="", response=""):
         return {
@@ -703,12 +783,22 @@ class MainWindow(QMainWindow):
         self.rep_active_thread=RepeaterWorker(method,url,headers,body)
         self.rep_active_thread.done.connect(self.repeater_done)
         self.rep_active_thread.failed.connect(self.repeater_failed)
+        self.rep_active_thread.cancelled.connect(self.repeater_cancelled)
         self.rep_active_thread.start()
 
     def cancel_repeater(self):
         if self.rep_active_thread and self.rep_active_thread.isRunning():
             self.rep_active_thread.stop_requested=True
-            self.rep_cancel.setEnabled(False); self.rep_request_info.setText("Cancellation requested…")
+            self.rep_cancel.setEnabled(False)
+            self.rep_request_info.setText("Cancelling request…")
+            self.statusBar().showMessage("Repeater: cancellation requested", 2500)
+
+    def repeater_cancelled(self):
+        self.rep_send.setEnabled(True)
+        self.rep_cancel.setEnabled(False)
+        self.rep_status_badge.setText("CANCEL")
+        self.rep_request_info.setText("Request cancelled")
+        self.statusBar().showMessage("Repeater request cancelled", 3000)
 
     def repeater_done(self,payload):
         self.rep_send.setEnabled(True); self.rep_cancel.setEnabled(False)
@@ -747,9 +837,30 @@ class MainWindow(QMainWindow):
         self._update_repeater_nav()
 
     def navigate_repeater(self,direction):
-        if not self.rep_history:return
-        idx=max(0,min(len(self.rep_history)-1,self.rep_history_index+direction)); self.rep_history_index=idx
-        s=self.rep_history[idx]; self.rep_request_pretty.setPlainText(s.get("request","")); self.rep_response_raw.setPlainText(s.get("response","")); self.rep_response_pretty.setPlainText(s.get("response_pretty",s.get("response",""))); self.rep_response_hex.setPlainText(self._to_hex(s.get("response",""))); self.rep_status_badge.setText(s.get("status","—")); self.rep_target_hint.setText("Target: "+(s.get("url") or "—")); self._update_repeater_nav()
+        if not self.rep_history:
+            return
+        idx=max(0,min(len(self.rep_history)-1,self.rep_history_index+direction))
+        self.rep_history_index=idx
+        session=self.rep_history[idx]
+        self._rep_loading=True
+        try:
+            request=session.get("request","")
+            response=session.get("response","")
+            self.rep_request_pretty.setPlainText(request)
+            self.rep_request_raw.setPlainText(request)
+            self.rep_request_hex.setPlainText(self._to_hex(request))
+            self.rep_response_raw.setPlainText(response)
+            self.rep_response_pretty.setPlainText(session.get("response_pretty") or response)
+            self.rep_response_hex.setPlainText(self._to_hex(response))
+            self.rep_response_render.setHtml(self._render_http_response(response))
+            self.rep_status_badge.setText(session.get("status","—"))
+            self.rep_method_badge.setText(session.get("method") or self._request_method_and_url(request)[0])
+            self.rep_target_hint.setText("Target: "+(session.get("url") or self._extract_url_from_request(request) or "—"))
+            self.rep_request_info.setText("Request history")
+            self.rep_response_info.setText(f"{session.get('size','—')} • {session.get('time','—')}")
+        finally:
+            self._rep_loading=False
+        self._update_repeater_nav()
 
     def _update_repeater_nav(self):
         self.rep_back.setEnabled(self.rep_history_index>0); self.rep_forward.setEnabled(0<=self.rep_history_index<len(self.rep_history)-1)
