@@ -18,6 +18,9 @@ QLabel{{background:transparent;}}
 QFrame#sidebar{{background:#070e1d; border-right:1px solid {BORDER};}}
 QFrame#topbar{{background:#080f20; border-bottom:1px solid {BORDER};}}
 QFrame#card,QFrame#panel{{background:{PANEL}; border:1px solid {BORDER}; border-radius:14px;}}
+QFrame#analyzerHeader{{background:#091326; border:1px solid {BORDER}; border-radius:14px;}}
+QFrame#analyzerStatus{{background:#071a18; border:1px solid #0e4f47; border-radius:8px;}}
+QFrame#analyzerContent{{background:transparent; border:0;}}
 QFrame#repPane{{background:{PANEL}; border:1px solid {BORDER}; border-radius:10px;}}
 QFrame#repPaneHeader{{background:#0b1628; border:0; border-bottom:1px solid {BORDER};}}
 QFrame#repToolbar{{background:#080f20; border:1px solid {BORDER}; border-radius:9px;}}
@@ -47,6 +50,13 @@ QPushButton#primary{{background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #17
 QPushButton.nav{{text-align:left; border:0; background:transparent; color:#91a0b7; padding:12px 14px;}}
 QPushButton.nav:hover{{background:#0e1c32; color:white;}}
 QPushButton.nav[active="true"]{{background:#102f55; color:{CYAN}; border:1px solid #12516c;}}
+QListWidget#analyzerNav{{background:#071021; border:0; padding:4px;}}
+QListWidget#analyzerNav::item{{background:transparent; border:1px solid transparent; border-radius:8px; padding:10px 8px; color:#91a0b7;}}
+QListWidget#analyzerNav::item:hover{{background:#0d1b31; color:{TEXT};}}
+QListWidget#analyzerNav::item:selected{{background:#0f3153; border:1px solid #12516c; color:{CYAN}; font-weight:700;}}
+QListWidget#findingList{{background:transparent; border:0; padding:2px;}}
+QListWidget#findingList::item{{background:#081426; border:1px solid #193050; border-radius:10px; padding:13px; margin:2px 0;}}
+QListWidget#findingList::item:selected{{background:#10233d; border-color:#24608f;}}
 QHeaderView::section{{background:#0d182b; color:#8da0ba; border:0; border-bottom:1px solid {BORDER}; padding:10px;}}
 QTableWidget{{gridline-color:#10203a;}}
 QTabBar::tab{{background:#0b162b; border:1px solid {BORDER}; padding:10px 16px; margin-right:5px; border-radius:9px; color:#91a0b7;}}
@@ -331,51 +341,184 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
     def analyzer(self):
-        s,l=self.page()
-        # v1.0: keep the analyzer focused on artifacts. Target is supplied by Dashboard.
-        grid=QGridLayout();self.metrics={};names=[("SITE MAP",CYAN),("NETWORK",CYAN),("SECRETS",PURPLE),("WEBSOCKETS",CYAN),("WEB FORMS",CYAN),("JS FILES",CYAN),("TECHNOLOGIES",CYAN),("STORAGE",CYAN),("COOKIES",CYAN)]
-        for i,(n,c) in enumerate(names):self.metrics[n]=Metric(n,0,c);grid.addWidget(self.metrics[n],i//5,i%5)
-        l.addLayout(grid)
+        s, outer = self.page()
+        outer.setContentsMargins(26, 24, 26, 28)
+        outer.setSpacing(14)
 
-        action=QFrame();action.setObjectName("card");al=QHBoxLayout(action);al.setContentsMargins(16,10,16,10)
-        self.analyzer_target=QLabel("Target: —");self.analyzer_target.setStyleSheet(f"color:{MUTED};font-size:12px;")
-        al.addWidget(self.analyzer_target,1)
-        go=QPushButton("⚡  START ANALYSIS");go.setObjectName("primary");go.clicked.connect(self.start_analysis);al.addWidget(go)
-        l.addWidget(action)
+        # Analyzer header / command strip
+        header = QFrame(); header.setObjectName("analyzerHeader")
+        hl = QHBoxLayout(header); hl.setContentsMargins(18, 14, 18, 14); hl.setSpacing(12)
+        title_box = QVBoxLayout(); title_box.setSpacing(3)
+        eyebrow = QLabel("WEB ANALYZER  •  V3.0")
+        eyebrow.setStyleSheet(f"color:{CYAN};font-size:10px;font-weight:800;letter-spacing:2px;")
+        self.analyzer_title = QLabel("Traffic-driven security analysis")
+        self.analyzer_title.setStyleSheet("font-size:24px;font-weight:800;")
+        self.analyzer_target = QLabel("Target: —  •  Source: Dashboard HTTP History")
+        self.analyzer_target.setStyleSheet(f"color:{MUTED};font-size:11px;")
+        title_box.addWidget(eyebrow); title_box.addWidget(self.analyzer_title); title_box.addWidget(self.analyzer_target)
+        hl.addLayout(title_box, 1)
 
-        self.tabs=QTabWidget()
-        for n in ["Site Map","Network","Secrets","WebSockets","Web Forms","JS Files","Technologies","Storage","Cookies","Payloads"]:self.tabs.addTab(self.make_tab(n),n)
-        l.addWidget(self.tabs,1);return s
+        status_box = QFrame(); status_box.setObjectName("analyzerStatus")
+        sl = QHBoxLayout(status_box); sl.setContentsMargins(11, 7, 11, 7); sl.setSpacing(7)
+        self.analyzer_status_dot = QLabel("●")
+        self.analyzer_status_dot.setStyleSheet(f"color:{GREEN};font-size:12px;")
+        self.analyzer_status = QLabel("READY")
+        self.analyzer_status.setStyleSheet(f"color:{GREEN};font-size:10px;font-weight:800;letter-spacing:1px;")
+        sl.addWidget(self.analyzer_status_dot); sl.addWidget(self.analyzer_status)
+        hl.addWidget(status_box)
 
-    def make_tab(self,name):
+        self.analyzer_start = QPushButton("▶  START ANALYSIS")
+        self.analyzer_start.setObjectName("primary"); self.analyzer_start.setMinimumSize(152, 42)
+        self.analyzer_start.clicked.connect(self.start_analysis); hl.addWidget(self.analyzer_start)
+        self.analyzer_stop = QPushButton("■  STOP"); self.analyzer_stop.setMinimumSize(76, 42); self.analyzer_stop.setEnabled(False)
+        self.analyzer_stop.clicked.connect(self.stop_analysis); hl.addWidget(self.analyzer_stop)
+        outer.addWidget(header)
+
+        # Metrics
+        metric_row = QHBoxLayout(); metric_row.setSpacing(10)
+        self.metrics = {}
+        metric_specs = [
+            ("REQUESTS", "0", CYAN), ("ENDPOINTS", "0", GREEN), ("PARAMETERS", "0", GOLD),
+            ("CONFIRMED", "0", PURPLE), ("TESTED", "0", GOLD), ("SECRETS", "0", CYAN),
+        ]
+        for title, value, accent in metric_specs:
+            card = Metric(title, value, accent); metric_row.addWidget(card, 1); self.metrics[title] = card
+        outer.addLayout(metric_row)
+
+        workspace = QSplitter(Qt.Horizontal); workspace.setChildrenCollapsible(False); workspace.setHandleWidth(6)
+        workspace.setStyleSheet(f"QSplitter::handle{{background:#101d34;}} QSplitter::handle:hover{{background:{CYAN};}}")
+
+        # Left analyzer module navigation
+        left = QFrame(); left.setObjectName("panel")
+        ll = QVBoxLayout(left); ll.setContentsMargins(12, 12, 12, 12); ll.setSpacing(8)
+        nav_head = QLabel("ANALYZER MODULES"); nav_head.setStyleSheet(f"color:{MUTED};font-size:10px;font-weight:800;letter-spacing:2px;padding:4px 6px;")
+        ll.addWidget(nav_head)
+        self.analyzer_nav = QListWidget(); self.analyzer_nav.setObjectName("analyzerNav"); self.analyzer_nav.setSpacing(4)
+        modules = [
+            ("Overview", "◎"), ("Site Map", "⌘"), ("Network", "⇄"), ("Secrets", "◆"),
+            ("WebSockets", "◌"), ("Web Forms", "▤"), ("JavaScript", "JS"),
+            ("Technologies", "◇"), ("Cookies", "○"), ("Payloads", "⚡"),
+        ]
+        for name, glyph in modules:
+            item = QListWidgetItem(f"  {glyph:<2}  {name}"); item.setData(Qt.UserRole, name); self.analyzer_nav.addItem(item)
+        self.analyzer_nav.setCurrentRow(0)
+        self.analyzer_nav.currentRowChanged.connect(self._analyzer_module_changed)
+        ll.addWidget(self.analyzer_nav, 1)
+
+        summary = QFrame(); summary.setObjectName("card")
+        ql = QVBoxLayout(summary); ql.setContentsMargins(12, 12, 12, 12); ql.setSpacing(6)
+        ql.addWidget(QLabel("FINDINGS SUMMARY"))
+        self.summary_confirmed = QLabel("●  Confirmed     0"); self.summary_confirmed.setStyleSheet(f"color:{RED};font-size:11px;font-weight:700;")
+        self.summary_tested = QLabel("●  Tested          0"); self.summary_tested.setStyleSheet(f"color:{GOLD};font-size:11px;font-weight:700;")
+        self.summary_not_confirmed = QLabel("●  Not confirmed   0"); self.summary_not_confirmed.setStyleSheet(f"color:{MUTED};font-size:11px;font-weight:700;")
+        for x in [self.summary_confirmed, self.summary_tested, self.summary_not_confirmed]: ql.addWidget(x)
+        ll.addWidget(summary)
+        workspace.addWidget(left)
+
+        # Main content: overview or module data
+        right = QFrame(); right.setObjectName("analyzerContent")
+        rl = QVBoxLayout(right); rl.setContentsMargins(0, 0, 0, 0); rl.setSpacing(10)
+
+        self.analyzer_stack = QStackedWidget(); self.analyzer_stack.setObjectName("analyzerStack")
+        self.module_pages = {}
+        for name in ["Overview","Site Map","Network","Secrets","WebSockets","Web Forms","JavaScript","Technologies","Cookies","Payloads"]:
+            page = self._build_analyzer_module_page(name); self.module_pages[name] = page; self.analyzer_stack.addWidget(page)
+        rl.addWidget(self.analyzer_stack, 1)
+
+        self.analyzer_log = QPlainTextEdit(); self.analyzer_log.setReadOnly(True); self.analyzer_log.setFixedHeight(104)
+        self.analyzer_log.setPlaceholderText("Analysis log will appear here…")
+        self.analyzer_log.setStyleSheet(f"background:#060d19;border:1px solid {BORDER};border-radius:10px;padding:8px;color:#8da0ba;font-family:DejaVu Sans Mono;font-size:10px;")
+        rl.addWidget(self.analyzer_log)
+        workspace.addWidget(right); workspace.setSizes([230, 980])
+        outer.addWidget(workspace, 1)
+
+        # Backward-compatible attributes used by existing functions.
+        self.tabs = self.analyzer_stack
+        self.table = self.module_pages["Network"].property("table_widget")
+        self.payload_table = self.module_pages["Payloads"].property("table_widget")
+        self.payload_status = self.module_pages["Payloads"].property("status_label")
+        return s
+
+    def _build_analyzer_module_page(self, name):
+        page = QWidget(); vl = QVBoxLayout(page); vl.setContentsMargins(0, 0, 0, 0); vl.setSpacing(10)
+        if name == "Overview":
+            top = QFrame(); top.setObjectName("panel"); tl = QVBoxLayout(top); tl.setContentsMargins(16, 14, 16, 14); tl.setSpacing(8)
+            row = QHBoxLayout(); title = QLabel("CONFIRMED FINDINGS"); title.setStyleSheet("font-size:15px;font-weight:800;"); row.addWidget(title); row.addStretch()
+            self.finding_filter = QLineEdit(); self.finding_filter.setPlaceholderText("Filter findings…"); self.finding_filter.setFixedWidth(250); self.finding_filter.textChanged.connect(self._filter_findings); row.addWidget(self.finding_filter)
+            tl.addLayout(row)
+            hint = QLabel("Only evidence-backed results are marked CONFIRMED. Discoveries without proof remain TESTED / NOT CONFIRMED.")
+            hint.setStyleSheet(f"color:{MUTED};font-size:10px;"); tl.addWidget(hint)
+            self.finding_list = QListWidget(); self.finding_list.setObjectName("findingList"); self.finding_list.setSpacing(7); self.finding_list.itemClicked.connect(self._show_finding_detail)
+            tl.addWidget(self.finding_list, 1); vl.addWidget(top, 1)
+            self.finding_detail = QPlainTextEdit(); self.finding_detail.setReadOnly(True); self.finding_detail.setObjectName("findingDetail"); vl.addWidget(self.finding_detail, 1)
+            return page
         if name == "Network":
-            w=QWidget(); vl=QVBoxLayout(w)
-            self.table=QTableWidget(0,5)
-            self.table.setHorizontalHeaderLabels(["METHOD","STATUS","URL","CONTENT TYPE","SIZE"])
-            self.table.horizontalHeader().setSectionResizeMode(2,QHeaderView.Stretch)
-            self.table.cellDoubleClicked.connect(self.network_to_repeater)
-            self.table.setContextMenuPolicy(Qt.CustomContextMenu)
-            self.table.customContextMenuRequested.connect(self._network_context_menu)
-            vl.addWidget(self.table); return w
+            table=self._make_table(["METHOD","STATUS","URL","CONTENT TYPE","SIZE"]); table.cellDoubleClicked.connect(self.network_to_repeater); table.setContextMenuPolicy(Qt.CustomContextMenu); table.customContextMenuRequested.connect(self._network_context_menu); vl.addWidget(table); page.setProperty("table_widget", table); return page
         if name == "Payloads":
-            w=QWidget(); vl=QVBoxLayout(w)
-            note=QLabel("Payload catalog is sourced from public CTF/web security write-ups and replayed only against discovered same-host input surfaces.")
-            note.setWordWrap(True); note.setStyleSheet(f"color:{MUTED};font-size:12px;"); vl.addWidget(note)
-            self.payload_table=QTableWidget(0,7)
-            self.payload_table.setHorizontalHeaderLabels(["FAMILY","PAYLOAD","METHOD","PARAMETER","STATUS","LENGTH","EVIDENCE"])
-            self.payload_table.setSelectionBehavior(QAbstractItemView.SelectRows)
-            ph=self.payload_table.horizontalHeader()
-            for col in [0,2,3,4,5]: ph.setSectionResizeMode(col,QHeaderView.ResizeToContents)
-            ph.setSectionResizeMode(1,QHeaderView.Stretch); ph.setSectionResizeMode(6,QHeaderView.Stretch)
-            vl.addWidget(self.payload_table,1)
-            self.payload_status=QLabel("Waiting for analysis…"); self.payload_status.setStyleSheet(f"color:{MUTED};font-size:11px;"); vl.addWidget(self.payload_status)
-            return w
-        w=QWidget(); vl=QVBoxLayout(w)
-        ed=QPlainTextEdit(); ed.setReadOnly(True); ed.setPlaceholderText(f"{name} artifacts will appear here...")
-        w._editor=ed; vl.addWidget(ed); return w
+            note=QLabel("Controlled probes are generated only for observed input surfaces. A result is CONFIRMED only when concrete evidence is present."); note.setWordWrap(True); note.setStyleSheet(f"color:{MUTED};font-size:10px;"); vl.addWidget(note)
+            table=self._make_table(["STATE","FAMILY","PARAMETER","PAYLOAD","STATUS","LENGTH","EVIDENCE","SOURCES"]); vl.addWidget(table,1); page.setProperty("table_widget", table)
+            status=QLabel("Waiting for analysis…"); status.setStyleSheet(f"color:{MUTED};font-size:10px;"); vl.addWidget(status); page.setProperty("status_label", status); return page
+        if name in {"Site Map","Secrets","WebSockets","Web Forms","JavaScript","Technologies","Cookies"}:
+            table=self._make_table(["TYPE","VALUE","SOURCE"]); vl.addWidget(table,1); page.setProperty("table_widget", table); return page
+        return page
+
+    def _make_table(self, headers):
+        table=QTableWidget(0,len(headers)); table.setHorizontalHeaderLabels(headers); table.setSelectionBehavior(QAbstractItemView.SelectRows); table.setSelectionMode(QAbstractItemView.SingleSelection); table.setAlternatingRowColors(False)
+        hh=table.horizontalHeader()
+        if len(headers)>1:
+            hh.setSectionResizeMode(1,QHeaderView.Stretch)
+            for i in range(len(headers)):
+                if i != 1: hh.setSectionResizeMode(i,QHeaderView.ResizeToContents)
+        else: hh.setSectionResizeMode(0,QHeaderView.Stretch)
+        table.verticalHeader().setVisible(False); table.setWordWrap(False); return table
+
+    def _analyzer_module_changed(self, row):
+        if row < 0 or row >= self.analyzer_stack.count(): return
+        self.analyzer_stack.setCurrentIndex(row)
+
+    def _set_analyzer_status(self, state, color=GREEN):
+        if hasattr(self, "analyzer_status"):
+            self.analyzer_status.setText(state); self.analyzer_status.setStyleSheet(f"color:{color};font-size:10px;font-weight:800;letter-spacing:1px;")
+            self.analyzer_status_dot.setStyleSheet(f"color:{color};font-size:12px;")
+
+    def _module_table(self, name):
+        return self.module_pages[name].property("table_widget")
+
+    def _clear_module_table(self, name):
+        t=self._module_table(name)
+        if t: t.setRowCount(0)
+
+    def _add_module_row(self, name, values):
+        t=self._module_table(name)
+        if not t: return
+        row=t.rowCount(); t.insertRow(row)
+        for c,v in enumerate(values): t.setItem(row,c,QTableWidgetItem(str(v)))
+
+    def _populate_simple_module(self, name, items, source="analysis"):
+        self._clear_module_table(name)
+        for value in items: self._add_module_row(name, [name.upper(), value, source])
+
+    def _filter_findings(self, text):
+        q=text.strip().lower()
+        for i in range(self.finding_list.count()):
+            item=self.finding_list.item(i); item.setHidden(bool(q and q not in item.text().lower()))
+
+    def _show_finding_detail(self, item):
+        data=item.data(Qt.UserRole) or {}
+        self.finding_detail.setPlainText(data.get("detail", item.text()))
+
+    def _analyzer_log_line(self, line):
+        if not hasattr(self, "analyzer_log"): return
+        stamp=datetime.now().strftime("%H:%M:%S")
+        self.analyzer_log.appendPlainText(f"[{stamp}] {line}")
+
+    def stop_analysis(self):
+        if self.worker and self.worker.isRunning():
+            self.worker.requestInterruption()
+            self._set_analyzer_status("STOPPING", GOLD)
+            self.analyzer_stop.setEnabled(False)
 
     def start_analysis(self):
-        # v3.0 analyzes the Dashboard HTTP History captured from Chromium.
         records=list(self.browser_records or [])
         if not records:
             self.statusBar().showMessage("Analysis requires HTTP History. Open a target in Dashboard and generate traffic first.", 7000)
@@ -384,59 +527,100 @@ class MainWindow(QMainWindow):
         for rec in records:
             url=str(getattr(rec, "url", "") or "")
             if url.lower().startswith(("http://", "https://")):
-                target=url
-                break
+                target=url; break
         if not target:
-            self.statusBar().showMessage("No HTTP/HTTPS target found in HTTP History.", 7000)
-            return
-        self.analyzer_target.setText(f"Target: {urlsplit(target).scheme}://{urlsplit(target).netloc}")
-        for m in self.metrics.values():m.setValue(0)
-        self.table.setRowCount(0);self.tabs.setCurrentIndex(1)
-        self.statusBar().showMessage(f"Analyzing {len(records)} captured HTTP requests…", 5000)
-        self.worker=Worker(target, records)
-        self.worker.done.connect(self.analysis_done)
-        self.worker.failed.connect(lambda e:self.statusBar().showMessage(f"Analysis error: {e}", 7000))
-        self.worker.start()
-    def analysis_done(self,r:AnalysisResult):
+            self.statusBar().showMessage("No HTTP/HTTPS target found in HTTP History.", 7000); return
+        self.analyzer_target.setText(f"Target: {urlsplit(target).scheme}://{urlsplit(target).netloc}  •  Source: Dashboard HTTP History")
+        self._set_analyzer_status("ANALYZING", GOLD); self.analyzer_start.setEnabled(False); self.analyzer_stop.setEnabled(True)
+        self.analyzer_log.clear(); self._analyzer_log_line(f"Starting analysis from {len(records)} captured requests")
+        for m in self.metrics.values(): m.setValue(0)
+        for name in self.module_pages:
+            if name != "Overview": self._clear_module_table(name)
+        self.finding_list.clear(); self.finding_detail.clear(); self.result=None
+        self.worker=Worker(target, records); self.worker.line.connect(self._analyzer_log_line); self.worker.done.connect(self.analysis_done)
+        self.worker.failed.connect(self._analysis_failed); self.worker.start()
+
+    def _analysis_failed(self, message):
+        self._set_analyzer_status("ERROR", RED); self.analyzer_start.setEnabled(True); self.analyzer_stop.setEnabled(False)
+        self._analyzer_log_line(f"ERROR: {message}"); self.statusBar().showMessage(f"Analysis error: {message}", 7000)
+
+    def analysis_done(self, r:AnalysisResult):
         self.result=r
-        counts={
-            "SITE MAP":len(r.site_map),
-            "NETWORK":len(r.network or r.requests),
-            "SECRETS":len(r.secrets),
-            "WEBSOCKETS":len(r.websockets),
-            "WEB FORMS":len(r.forms),
-            "JS FILES":len(r.js_files),
-            "TECHNOLOGIES":len(r.technologies),
-            "STORAGE":0,
-            "COOKIES":len(r.cookies),
-        }
-        for key,val in counts.items():
-            if key in self.metrics: self.metrics[key].setValue(val)
-
-        self.table.setRowCount(0)
-        for rec in r.requests:
-            row=self.table.rowCount(); self.table.insertRow(row)
-            for col,val in enumerate([rec.method,str(rec.status),rec.url,rec.content_type,str(rec.size)]):
-                self.table.setItem(row,col,QTableWidgetItem(str(val)))
-
-        self.history_count.setText(f"{len(r.requests)} requests")
-        self.fill_tab(0,"\n".join(r.site_map) or "No site-map entries discovered.")
-        self.fill_tab(2,"\n".join(r.secrets) or "No high-confidence secret-like artifacts found.")
-        self.fill_tab(3,"\n".join(r.websockets) or "No WebSocket endpoints discovered.")
-        self.fill_tab(4,"\n".join(f"{x['method']} {x['action']}  inputs={len(x.get('inputs',[]))}" for x in r.forms) or "No web forms observed.")
-        self.fill_tab(5,"\n".join(r.js_files) or "No JavaScript files observed.")
-        self.fill_tab(6,"\n".join(r.technologies) or "No technology signatures identified.")
-        self.fill_tab(7,"Storage analysis is intentionally reserved for browser/storage capture in a later release.")
-        self.fill_tab(8,"\n".join(r.cookies) or "No cookies observed.")
-
-        self.payload_table.setRowCount(0)
+        endpoint_set={urlunsplit((urlsplit(x.url).scheme,urlsplit(x.url).netloc,urlsplit(x.url).path,"", "")) for x in r.requests}
+        params=set()
+        for x in r.requests:
+            params.update(k for k,_ in parse_qsl(urlsplit(x.url).query, keep_blank_values=True))
+            ctype = next((v for k,v in x.request_headers.items() if str(k).lower() == "content-type"), "").lower()
+            if x.request_body and "application/x-www-form-urlencoded" in ctype:
+                params.update(k for k,_ in parse_qsl(x.request_body, keep_blank_values=True))
+            elif x.request_body and "application/json" in ctype:
+                try:
+                    obj = __import__("json").loads(x.request_body)
+                    if isinstance(obj, dict): params.update(obj.keys())
+                except Exception:
+                    pass
+        confirmed=[]; tested=0
+        not_confirmed=0
         for pr in r.payload_runs:
-            row=self.payload_table.rowCount(); self.payload_table.insertRow(row)
-            vals=[pr.family,pr.payload,"GET",pr.parameter,str(pr.status),str(pr.size),pr.evidence or pr.error or "—"]
-            for col,val in enumerate(vals): self.payload_table.setItem(row,col,QTableWidgetItem(str(val)))
-        self.payload_status.setText(f"Payload replay completed: {len(r.payload_runs)} probes from observed input surfaces")
-        self.analyzer_target.setText(f"Target: {r.target} • source: Dashboard HTTP History")
+            tested += 1
+            if getattr(pr, "state", "TESTED") == "CONFIRMED":
+                confirmed.append(pr)
+            else:
+                not_confirmed += 1
+        counts={
+            "REQUESTS":len(r.requests), "ENDPOINTS":len(endpoint_set), "PARAMETERS":len(params),
+            "CONFIRMED":len(confirmed), "TESTED":tested, "SECRETS":len(r.secrets),
+        }
+        for key,val in counts.items(): self.metrics[key].setValue(val)
+        self.summary_confirmed.setText(f"●  Confirmed     {len(confirmed)}"); self.summary_tested.setText(f"●  Tested          {tested}"); self.summary_not_confirmed.setText(f"●  Not confirmed   {not_confirmed}")
+
+        nt=self._module_table("Network"); nt.setRowCount(0)
+        for rec in r.requests:
+            row=nt.rowCount(); nt.insertRow(row)
+            vals=[rec.method,str(rec.status or "—"),rec.url,rec.content_type or "—",str(rec.size)]
+            for c,v in enumerate(vals): nt.setItem(row,c,QTableWidgetItem(v))
+
+        self._populate_simple_module("Site Map", r.site_map, "captured traffic")
+        self._populate_simple_module("Secrets", r.secrets, "response / script evidence")
+        self._populate_simple_module("WebSockets", r.websockets, "captured traffic")
+        self._clear_module_table("Web Forms")
+        for f in r.forms: self._add_module_row("Web Forms", [f.get("method",""), f.get("action",""), f"inputs={len(f.get('inputs',[]))}"])
+        self._populate_simple_module("JavaScript", r.js_files, "captured HTML / network")
+        self._populate_simple_module("Technologies", r.technologies, "headers / response signatures")
+        self._populate_simple_module("Cookies", r.cookies, "captured headers")
+
+        pt=self._module_table("Payloads"); pt.setRowCount(0)
+        for pr in r.payload_runs:
+            state=getattr(pr, "state", "TESTED")
+            row=pt.rowCount(); pt.insertRow(row)
+            vals=[state,pr.family,pr.parameter,pr.payload,str(pr.status or "—"),str(pr.size or "—"),pr.evidence or pr.error or "No confirming evidence", " | ".join(pr.source_urls) if getattr(pr, "source_urls", None) else "—"]
+            for c,v in enumerate(vals): pt.setItem(row,c,QTableWidgetItem(v))
+        self.payload_status.setText(f"{len(r.payload_runs)} controlled probes • {len(confirmed)} confirmed by explicit evidence")
+
+        self.finding_list.clear()
+        for pr in confirmed:
+            item=QListWidgetItem(f"CONFIRMED   {pr.family}   •   {pr.method}   {pr.parameter or '—'}")
+            detail=(
+                f"CONFIRMED FINDING\n\n"
+                f"Family: {pr.family}\nMethod: {pr.method}\nEndpoint: {pr.url}\n"
+                f"Parameter: {pr.parameter or '—'}\nPayload: {pr.payload}\n\n"
+                f"Baseline: {pr.baseline_status} / {pr.baseline_size} bytes\n"
+                f"Test: {pr.status} / {pr.size} bytes\n"
+                f"Diff: {pr.diff_summary}\n\n"
+                f"Evidence:\n✓ {pr.evidence}\n\n"
+                f"BASELINE REQUEST\n{pr.baseline_request}\n\n"
+                f"TEST REQUEST\n{pr.test_request}\n\n"
+                f"This result is marked CONFIRMED only because the family-specific evidence rule matched the observed response."
+            )
+            item.setData(Qt.UserRole, {"detail":detail}); self.finding_list.addItem(item)
+        if self.finding_list.count()==0:
+            self.finding_list.addItem("No evidence-backed findings from captured traffic.")
+            self.finding_detail.setPlainText("No CONFIRMED finding was produced. Discovered surfaces remain available in the modules.")
+        self._analyzer_log_line(f"Completed: {len(r.requests)} requests • {len(confirmed)} confirmed • {tested} tested")
+        self._set_analyzer_status("COMPLETE", GREEN); self.analyzer_start.setEnabled(True); self.analyzer_stop.setEnabled(False)
+        self.analyzer_stack.setCurrentIndex(0); self.analyzer_nav.setCurrentRow(0)
         self.statusBar().showMessage(f"Analysis complete • {len(r.requests)} captured requests analyzed", 7000)
+
     def history_selected(self):
         if not hasattr(self,"history_table"):
             return

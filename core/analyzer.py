@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from urllib.parse import urljoin, urlsplit, parse_qsl, urlencode, urlunsplit, quote_plus
+import json
 import re
 import httpx
 from bs4 import BeautifulSoup
-from core.payloads import PAYLOADS
+from core.payloads import PAYLOADS, applicable_families, source_urls_for
 
 
 @dataclass
@@ -16,6 +17,10 @@ class RequestRecord:
     content_type: str = ""
     size: int = 0
     response_body: str = ""
+    request_headers: dict[str, str] = field(default_factory=dict)
+    request_body: str = ""
+    response_headers: dict[str, str] = field(default_factory=dict)
+    duration_ms: int = 0
 
 
 @dataclass
@@ -28,6 +33,17 @@ class PayloadRun:
     size: int = 0
     evidence: str = ""
     error: str = ""
+    state: str = "TESTED"
+    baseline_status: int = 0
+    baseline_size: int = 0
+    baseline_body: str = ""
+    test_body: str = ""
+    baseline_request: str = ""
+    test_request: str = ""
+    response_headers: dict[str, str] = field(default_factory=dict)
+    diff_summary: str = ""
+    method: str = "GET"
+    source_urls: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -142,78 +158,230 @@ class WebAnalyzer:
             if clean not in seen and clean not in queue and len(queue) < self.max_pages * 2:
                 queue.append(clean)
 
+    @staticmethod
+    def _header_get(headers: dict[str, str], name: str) -> str:
+        target = name.lower()
+        return next((v for k, v in headers.items() if str(k).lower() == target), "")
+
+    @staticmethod
+    def _request_text(method: str, url: str, headers: dict[str, str], body: str = "") -> str:
+        sp = urlsplit(url)
+        request_line = f"{method.upper()} {sp.path or '/'}"
+        if sp.query:
+            request_line += f"?{sp.query}"
+        request_line += " HTTP/1.1"
+        lines = [request_line]
+        lines.extend(f"{k}: {v}" for k, v in headers.items())
+        if body:
+            lines.extend(["", body])
+        return "\n".join(lines)
+
+    @staticmethod
+    def _mutate_observed_input(rec, parameter: str, payload: str):
+        url = str(getattr(rec, "url", "") or "")
+        method = str(getattr(rec, "method", "GET") or "GET").upper()
+        headers = dict(getattr(rec, "request_headers", {}) or {})
+        body = str(getattr(rec, "request_body", "") or "")
+        sp = urlsplit(url)
+
+        query_pairs = parse_qsl(sp.query, keep_blank_values=True)
+        if any(k == parameter for k, _ in query_pairs):
+            replaced = False
+            mutated = []
+            for key, value in query_pairs:
+                if key == parameter and not replaced:
+                    mutated.append((key, payload))
+                    replaced = True
+                else:
+                    mutated.append((key, value))
+            new_url = urlunsplit((sp.scheme, sp.netloc, sp.path, urlencode(mutated), ""))
+            return new_url, headers, body
+
+        content_type = WebAnalyzer._header_get(headers, "content-type").lower()
+        if body and "application/x-www-form-urlencoded" in content_type:
+            pairs = parse_qsl(body, keep_blank_values=True)
+            if any(k == parameter for k, _ in pairs):
+                replaced = False
+                mutated = []
+                for key, value in pairs:
+                    if key == parameter and not replaced:
+                        mutated.append((key, payload))
+                        replaced = True
+                    else:
+                        mutated.append((key, value))
+                return url, headers, urlencode(mutated)
+
+        if body and "application/json" in content_type:
+            try:
+                obj = json.loads(body)
+                if isinstance(obj, dict) and parameter in obj and isinstance(obj[parameter], (str, int, float, bool, type(None))):
+                    obj[parameter] = payload
+                    return url, headers, json.dumps(obj, separators=(",", ":"))
+            except Exception:
+                pass
+        return None
+
+    @staticmethod
+    def _diff_summary(baseline_status: int, test_status: int, baseline_size: int, test_size: int, baseline_body: str, test_body: str) -> str:
+        parts = []
+        if baseline_status != test_status:
+            parts.append(f"status {baseline_status}→{test_status}")
+        if baseline_size != test_size:
+            parts.append(f"length {baseline_size}→{test_size} ({test_size-baseline_size:+d})")
+        if baseline_body != test_body:
+            parts.append("body changed")
+        return "; ".join(parts) if parts else "no observable response difference"
+
+    def _evidence_for(self, family: str, payload: str, baseline_body: str, test_body: str, baseline_status: int, test_status: int, response_headers: dict[str, str], url: str) -> tuple[str, str]:
+        """Return (state, evidence) using explicit evidence rules only.
+
+        CONFIRMED means the test produced a family-specific observable artifact;
+        generic status/length changes alone are never sufficient.
+        """
+        b = (baseline_body or "").lower()
+        t = (test_body or "").lower()
+        headers = {str(k).lower(): str(v) for k, v in (response_headers or {}).items()}
+
+        if family == "SQL Injection":
+            markers = ("sql syntax", "mysql", "mariadb", "sqlite", "postgresql", "ora-", "odbc sql", "syntax error at or near")
+            hit = next((m for m in markers if m in t and m not in b), "")
+            if hit:
+                return "CONFIRMED", f"database error signature introduced: {hit}"
+            return "TESTED", "no database error signature introduced"
+
+        if family == "XSS":
+            if payload.lower() in t and payload.lower() not in b:
+                return "TESTED", "payload reflection observed (execution not proven)"
+            return "TESTED", "no payload reflection observed"
+
+        if family == "SSTI":
+            if any(marker in t and marker not in b for marker in ("49", "49.0")):
+                return "CONFIRMED", "template arithmetic output observed"
+            return "TESTED", "template evaluation not proven"
+
+        if family == "LFI / Traversal":
+            for marker in ("root:x:", "root:", "[boot loader]", "localhost"):
+                if marker in t and marker not in b:
+                    return "CONFIRMED", f"file-content signature introduced: {marker}"
+            return "TESTED", "no file-content signature introduced"
+
+        if family == "Command Injection":
+            for marker in ("uid=", "gid=", "command not found"):
+                if marker in t and marker not in b:
+                    return "CONFIRMED", f"command-output signature introduced: {marker}"
+            return "TESTED", "no command-output signature introduced"
+
+        if family == "Open Redirect":
+            location = headers.get("location", "")
+            if location and urlsplit(location).netloc and urlsplit(location).netloc != urlsplit(url).netloc:
+                return "CONFIRMED", f"external Location header observed: {location}"
+            return "TESTED", "no external redirect observed"
+
+        if family == "SSRF":
+            for marker in ("localhost", "127.0.0.1", "connection refused", "internal server"):
+                if marker in t and marker not in b:
+                    return "TESTED", f"internal-target response marker observed: {marker} (server-side fetch not independently proven)"
+            return "TESTED", "no internal-target response marker observed"
+
+        if family == "NoSQL Injection":
+            markers = ("mongodb", "bson", "$ne", "$gt", "cast to object")
+            if any(m in t and m not in b for m in markers):
+                return "TESTED", "NoSQL-related response marker observed (injection not independently proven)"
+            return "TESTED", "no NoSQL-specific evidence observed"
+
+        if family == "XXE":
+            for marker in ("root:x:", "localhost", "<!doctype", "entity"):
+                if marker in t and marker not in b:
+                    return "TESTED", f"XXE-related marker observed: {marker} (external entity resolution not independently proven)"
+            return "TESTED", "no XXE-specific evidence observed"
+
+        return "TESTED", "no confirming evidence rule matched"
+
     def _probe_payloads(self, client: httpx.Client, result: AnalysisResult, log=None):
         query_records = []
-        seen_targets = set()
         for rec in result.requests:
-            if rec.method.upper() not in {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}:
+            method = rec.method.upper()
+            if method not in {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}:
                 continue
-            sp = urlsplit(rec.url)
-            params = parse_qsl(sp.query, keep_blank_values=True)
-            if params:
-                query_records.append((rec, params[0][0], "query"))
-            elif rec.method.upper() == "GET":
-                # Keep synthetic probes limited to URLs likely to have input semantics.
-                for hint in ("id", "q", "query", "search", "url", "file", "page", "path"):
-                    if hint in sp.path.lower():
-                        query_records.append((rec, hint, "synthetic"))
-                        break
+            # Only test input surfaces actually observed in the captured request.
+            params = [k for k, _ in parse_qsl(urlsplit(rec.url).query, keep_blank_values=True)]
+            if not params:
+                ctype = self._header_get(rec.request_headers, "content-type").lower()
+                if rec.request_body and "application/x-www-form-urlencoded" in ctype:
+                    params = [k for k, _ in parse_qsl(rec.request_body, keep_blank_values=True)]
+                elif rec.request_body and "application/json" in ctype:
+                    try:
+                        obj = json.loads(rec.request_body)
+                        if isinstance(obj, dict):
+                            params = list(obj.keys())
+                    except Exception:
+                        pass
+            for parameter in dict.fromkeys(params):
+                query_records.append((rec, parameter))
 
-        total = sum(len(v) for v in PAYLOADS.values()) * len(query_records)
+        total = 0
+        for rec, parameter in query_records:
+            ctype = self._header_get(rec.request_headers, "content-type").lower()
+            total += sum(len(PAYLOADS.get(family, [])) for family in applicable_families(parameter, ctype, body=rec.request_body))
         if log:
-            log(f"PAYLOAD RUN: {total} controlled probes planned")
+            log(f"PAYLOAD RUN: {total} controlled probes planned from observed HTTP History inputs")
         completed = 0
 
-        for rec, parameter, mode in query_records:
-            sp = urlsplit(rec.url)
-            pairs = parse_qsl(sp.query, keep_blank_values=True)
-            for family, payload_list in PAYLOADS.items():
-                for payload in payload_list:
-                    if mode == "query":
-                        replaced = False
-                        new_pairs = []
-                        for key, value in pairs:
-                            if not replaced and key == parameter:
-                                new_pairs.append((key, payload))
-                                replaced = True
-                            else:
-                                new_pairs.append((key, value))
-                        probe = urlunsplit((sp.scheme, sp.netloc, sp.path, urlencode(new_pairs), ""))
-                    else:
-                        query = urlencode({parameter: payload})
-                        probe = urlunsplit((sp.scheme, sp.netloc, sp.path, query, ""))
-
-                    run = PayloadRun(family, payload, probe, parameter)
+        for rec, parameter in query_records:
+            ctype = self._header_get(rec.request_headers, "content-type").lower()
+            families = applicable_families(parameter, ctype, body=rec.request_body)
+            for family in families:
+                for payload in PAYLOADS.get(family, []):
+                    mutation = self._mutate_observed_input(rec, parameter, payload)
+                    if not mutation:
+                        continue
+                    probe, headers, body = mutation
+                    run = PayloadRun(
+                        family=family,
+                        payload=payload,
+                        url=probe,
+                        parameter=parameter,
+                        baseline_status=rec.status,
+                        baseline_size=rec.size,
+                        baseline_body=rec.response_body[:200000],
+                        baseline_request=self._request_text(rec.method, rec.url, rec.request_headers, rec.request_body),
+                        test_request=self._request_text(rec.method, probe, headers, body),
+                        source_urls=source_urls_for(family),
+                    )
                     try:
-                        # Payload execution is intentionally conservative:
-                        # one substituted parameter, short timeout, same origin.
-                        pr = client.request(rec.method, probe, content=None)
+                        follow_redirects = family != "Open Redirect"
+                        pr = client.request(
+                            rec.method,
+                            probe,
+                            headers=headers,
+                            content=body.encode("utf-8") if body else None,
+                            follow_redirects=follow_redirects,
+                        )
                         run.status = pr.status_code
                         run.size = len(pr.content)
-                        body = pr.text[:200000]
-                        low = body.lower()
-                        markers = []
-                        if family == "SSTI" and any(x in low for x in ("49", "<%=", "49.0")):
-                            markers.append("template arithmetic marker")
-                        if family == "LFI / Traversal" and any(x in low for x in ("root:", "localhost", "[boot loader]")):
-                            markers.append("file-content marker")
-                        if family == "Command Injection" and any(x in low for x in ("uid=", "gid=", "command not found")):
-                            markers.append("command-output marker")
-                        if family == "SQL Injection" and any(x in low for x in ("sql syntax", "mysql", "sqlite", "postgresql", "syntax error")):
-                            markers.append("sql error marker")
-                        if family == "XSS" and payload.lower() in low:
-                            markers.append("reflection")
-                        if family == "SSRF" and any(x in low for x in ("127.0.0.1", "localhost", "connection refused")):
-                            markers.append("internal target marker")
-                        run.evidence = ", ".join(markers)
+                        run.test_body = pr.text[:200000]
+                        run.response_headers = dict(pr.headers)
+                        run.diff_summary = self._diff_summary(
+                            run.baseline_status, run.status,
+                            run.baseline_size, run.size,
+                            run.baseline_body, run.test_body,
+                        )
+                        run.state, run.evidence = self._evidence_for(
+                            family, payload,
+                            run.baseline_body, run.test_body,
+                            run.baseline_status, run.status,
+                            run.response_headers, probe,
+                        )
                     except Exception as exc:
                         run.error = str(exc)[:300]
+                        run.state = "TESTED"
                     result.payload_runs.append(run)
                     completed += 1
                     if log and (completed == total or completed % 25 == 0):
-                        log(f"PAYLOAD {completed}/{total} {family} {parameter} {run.status}")
+                        log(f"PAYLOAD {completed}/{total} {family} {parameter} {run.state} {run.status}")
         if log:
-            log(f"PAYLOAD RUN COMPLETE: {completed}/{total} probes executed")
+            confirmed = sum(1 for x in result.payload_runs if x.state == "CONFIRMED")
+            log(f"PAYLOAD RUN COMPLETE: {completed}/{total} probes executed • {confirmed} confirmed by evidence")
 
     @staticmethod
     def _target_from_records(records) -> str:
@@ -249,6 +417,10 @@ class WebAnalyzer:
                 content_type=mime,
                 size=size or len(body.encode("utf-8", errors="ignore")),
                 response_body=body,
+                request_headers=req_headers,
+                request_body=str(getattr(rec, "request_body", "") or ""),
+                response_headers=resp_headers,
+                duration_ms=int(getattr(rec, "duration_ms", 0) or 0),
             ))
             result.network.append(f"{method} {status or '…'} {url}")
             if self._clean_url(url) not in result.site_map:

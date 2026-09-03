@@ -1,8 +1,7 @@
 # Build Info
 
-Version: 2.1
-Focus: HTTP history -> Repeater workflow and Repeater controls.
+Version: 3.0.0
+Feature update: curated GitHub CTF/write-up payload knowledge base + parameter applicability routing.
 
 Validation:
-- py_compile: PASS for all Python sources.
-- MainWindow runtime smoke-test was not possible in this environment because PySide6 is not installed here; the target project still uses PySide6 as declared by the application architecture.
+- Python source compiled successfully with `python -m py_compile`.
