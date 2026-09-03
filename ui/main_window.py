@@ -56,9 +56,10 @@ QScrollArea{{border:0;}}
 
 class Worker(QThread):
     done=Signal(object); failed=Signal(str); line=Signal(str)
-    def __init__(self,target): super().__init__(); self.target=target
+    def __init__(self,target,records):
+        super().__init__(); self.target=target; self.records=list(records or [])
     def run(self):
-        try:self.done.emit(WebAnalyzer().run(self.target,self.line.emit))
+        try:self.done.emit(WebAnalyzer().run_from_history(self.records,self.target,self.line.emit))
         except Exception as e:self.failed.emit(str(e))
 
 class Metric(QFrame):
@@ -347,47 +348,95 @@ class MainWindow(QMainWindow):
         l.addWidget(self.tabs,1);return s
 
     def make_tab(self,name):
-        if name=="Network":
-            w=QWidget();vl=QVBoxLayout(w);self.table=QTableWidget(0,5);self.table.setHorizontalHeaderLabels(["METHOD","STATUS","URL","CONTENT TYPE","SIZE"]);self.table.horizontalHeader().setSectionResizeMode(2,QHeaderView.Stretch);self.table.cellDoubleClicked.connect(self.network_to_repeater)
+        if name == "Network":
+            w=QWidget(); vl=QVBoxLayout(w)
+            self.table=QTableWidget(0,5)
+            self.table.setHorizontalHeaderLabels(["METHOD","STATUS","URL","CONTENT TYPE","SIZE"])
+            self.table.horizontalHeader().setSectionResizeMode(2,QHeaderView.Stretch)
+            self.table.cellDoubleClicked.connect(self.network_to_repeater)
             self.table.setContextMenuPolicy(Qt.CustomContextMenu)
             self.table.customContextMenuRequested.connect(self._network_context_menu)
-            vl.addWidget(self.table);return w
-        if name=="Payloads":
-            w=QWidget();vl=QVBoxLayout(w)
-            note=QLabel("All payloads run automatically against discovered request surfaces. No payload selector.")
-            note.setStyleSheet(f"color:{MUTED};font-size:12px;");vl.addWidget(note)
+            vl.addWidget(self.table); return w
+        if name == "Payloads":
+            w=QWidget(); vl=QVBoxLayout(w)
+            note=QLabel("Payload catalog is sourced from public CTF/web security write-ups and replayed only against discovered same-host input surfaces.")
+            note.setWordWrap(True); note.setStyleSheet(f"color:{MUTED};font-size:12px;"); vl.addWidget(note)
             self.payload_table=QTableWidget(0,7)
             self.payload_table.setHorizontalHeaderLabels(["FAMILY","PAYLOAD","METHOD","PARAMETER","STATUS","LENGTH","EVIDENCE"])
             self.payload_table.setSelectionBehavior(QAbstractItemView.SelectRows)
-            self.payload_table.setAlternatingRowColors(False)
-            ph=self.payload_table.horizontalHeader();ph.setSectionResizeMode(0,QHeaderView.ResizeToContents);ph.setSectionResizeMode(1,QHeaderView.Stretch);ph.setSectionResizeMode(2,QHeaderView.ResizeToContents);ph.setSectionResizeMode(3,QHeaderView.ResizeToContents);ph.setSectionResizeMode(4,QHeaderView.ResizeToContents);ph.setSectionResizeMode(5,QHeaderView.ResizeToContents);ph.setSectionResizeMode(6,QHeaderView.Stretch)
-            self.payload_table.setMinimumHeight(260);vl.addWidget(self.payload_table,1)
-            self.payload_status=QLabel("Waiting for analysis…");self.payload_status.setStyleSheet(f"color:{MUTED};font-size:11px;");vl.addWidget(self.payload_status)
+            ph=self.payload_table.horizontalHeader()
+            for col in [0,2,3,4,5]: ph.setSectionResizeMode(col,QHeaderView.ResizeToContents)
+            ph.setSectionResizeMode(1,QHeaderView.Stretch); ph.setSectionResizeMode(6,QHeaderView.Stretch)
+            vl.addWidget(self.payload_table,1)
+            self.payload_status=QLabel("Waiting for analysis…"); self.payload_status.setStyleSheet(f"color:{MUTED};font-size:11px;"); vl.addWidget(self.payload_status)
             return w
-        w=QWidget();vl=QVBoxLayout(w);ed=QPlainTextEdit();ed.setReadOnly(True);ed.setPlaceholderText(f"{name} artifacts will appear here...");w._editor=ed;vl.addWidget(ed);return w
+        w=QWidget(); vl=QVBoxLayout(w)
+        ed=QPlainTextEdit(); ed.setReadOnly(True); ed.setPlaceholderText(f"{name} artifacts will appear here...")
+        w._editor=ed; vl.addWidget(ed); return w
 
     def start_analysis(self):
-        target=self.target_edit.text().strip()
-        if not target:return
+        # v3.0 analyzes the Dashboard HTTP History captured from Chromium.
+        records=list(self.browser_records or [])
+        if not records:
+            self.statusBar().showMessage("Analysis requires HTTP History. Open a target in Dashboard and generate traffic first.", 7000)
+            return
+        target=""
+        for rec in records:
+            url=str(getattr(rec, "url", "") or "")
+            if url.lower().startswith(("http://", "https://")):
+                target=url
+                break
+        if not target:
+            self.statusBar().showMessage("No HTTP/HTTPS target found in HTTP History.", 7000)
+            return
+        self.analyzer_target.setText(f"Target: {urlsplit(target).scheme}://{urlsplit(target).netloc}")
         for m in self.metrics.values():m.setValue(0)
-        self.table.setRowCount(0);self.tabs.setCurrentIndex(1);self.worker=Worker(target);self.worker.done.connect(self.analysis_done);self.worker.failed.connect(lambda e:self.statusBar().showMessage(f"Analysis error: {e}"));self.worker.start()
+        self.table.setRowCount(0);self.tabs.setCurrentIndex(1)
+        self.statusBar().showMessage(f"Analyzing {len(records)} captured HTTP requests…", 5000)
+        self.worker=Worker(target, records)
+        self.worker.done.connect(self.analysis_done)
+        self.worker.failed.connect(lambda e:self.statusBar().showMessage(f"Analysis error: {e}", 7000))
+        self.worker.start()
     def analysis_done(self,r:AnalysisResult):
-        self.result=r;self.metrics["SITE MAP"].setValue(len(r.site_map));self.metrics["NETWORK"].setValue(len(r.requests));self.metrics["SECRETS"].setValue(len(r.secrets));self.metrics["WEB FORMS"].setValue(len(r.forms));self.metrics["JS FILES"].setValue(len(r.js_files));self.metrics["TECHNOLOGIES"].setValue(len(r.technologies));self.metrics["COOKIES"].setValue(len(r.cookies))
+        self.result=r
+        counts={
+            "SITE MAP":len(r.site_map),
+            "NETWORK":len(r.network or r.requests),
+            "SECRETS":len(r.secrets),
+            "WEBSOCKETS":len(r.websockets),
+            "WEB FORMS":len(r.forms),
+            "JS FILES":len(r.js_files),
+            "TECHNOLOGIES":len(r.technologies),
+            "STORAGE":0,
+            "COOKIES":len(r.cookies),
+        }
+        for key,val in counts.items():
+            if key in self.metrics: self.metrics[key].setValue(val)
+
+        self.table.setRowCount(0)
         for rec in r.requests:
-            row=self.table.rowCount();self.table.insertRow(row)
-            for col,val in enumerate([rec.method,str(rec.status),rec.url,rec.content_type,str(rec.size)]):self.table.setItem(row,col,QTableWidgetItem(val))
-            hrow=self.history_table.rowCount(); self.history_table.insertRow(hrow)
-            params=urlsplit(rec.url).query
-            vals=[rec.method,rec.url,"Yes" if params else "",str(rec.status),str(rec.size),rec.content_type,"", "", datetime.now().strftime("%H:%M:%S")]
-            for col,val in enumerate(vals): self.history_table.setItem(hrow,col,QTableWidgetItem(val))
+            row=self.table.rowCount(); self.table.insertRow(row)
+            for col,val in enumerate([rec.method,str(rec.status),rec.url,rec.content_type,str(rec.size)]):
+                self.table.setItem(row,col,QTableWidgetItem(str(val)))
+
         self.history_count.setText(f"{len(r.requests)} requests")
-        self.fill_tab(0,"\n".join(r.site_map));self.fill_tab(2,"\n".join(r.secrets) or "No secret artifacts collected.");self.fill_tab(4,"\n".join(f"{x['method']} {x['action']}" for x in r.forms) or "No forms observed.");self.fill_tab(5,"\n".join(r.js_files) or "No JavaScript files observed.");self.fill_tab(6,"\n".join(r.technologies) or "No technology headers identified.");self.fill_tab(8,"\n".join(r.cookies) or "No cookies observed.")
+        self.fill_tab(0,"\n".join(r.site_map) or "No site-map entries discovered.")
+        self.fill_tab(2,"\n".join(r.secrets) or "No high-confidence secret-like artifacts found.")
+        self.fill_tab(3,"\n".join(r.websockets) or "No WebSocket endpoints discovered.")
+        self.fill_tab(4,"\n".join(f"{x['method']} {x['action']}  inputs={len(x.get('inputs',[]))}" for x in r.forms) or "No web forms observed.")
+        self.fill_tab(5,"\n".join(r.js_files) or "No JavaScript files observed.")
+        self.fill_tab(6,"\n".join(r.technologies) or "No technology signatures identified.")
+        self.fill_tab(7,"Storage analysis is intentionally reserved for browser/storage capture in a later release.")
+        self.fill_tab(8,"\n".join(r.cookies) or "No cookies observed.")
+
         self.payload_table.setRowCount(0)
         for pr in r.payload_runs:
-            row=self.payload_table.rowCount();self.payload_table.insertRow(row)
-            vals=[pr.family,pr.payload,"GET",pr.parameter,str(pr.status),str(pr.size),pr.evidence or (pr.error if pr.error else "—")]
-            for col,val in enumerate(vals):self.payload_table.setItem(row,col,QTableWidgetItem(val))
-        self.payload_status.setText(f"Automatic payload execution: {len(r.payload_runs)} probes completed")
+            row=self.payload_table.rowCount(); self.payload_table.insertRow(row)
+            vals=[pr.family,pr.payload,"GET",pr.parameter,str(pr.status),str(pr.size),pr.evidence or pr.error or "—"]
+            for col,val in enumerate(vals): self.payload_table.setItem(row,col,QTableWidgetItem(str(val)))
+        self.payload_status.setText(f"Payload replay completed: {len(r.payload_runs)} probes from observed input surfaces")
+        self.analyzer_target.setText(f"Target: {r.target} • source: Dashboard HTTP History")
+        self.statusBar().showMessage(f"Analysis complete • {len(r.requests)} captured requests analyzed", 7000)
     def history_selected(self):
         if not hasattr(self,"history_table"):
             return
