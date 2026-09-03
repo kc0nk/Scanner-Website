@@ -1,14 +1,20 @@
-# CTF Exploit Workbench v1.0.0
+# CTF Exploit Workbench v2.0.0
 
-Desktop web analysis baseline.
+Desktop web-analysis workbench built with PySide6.
 
-Main areas: Dashboard, Web Analyzer, Workflow, Repeater.
+## v2.0 browser capture
 
-The Web Analyzer keeps payload testing as an integrated feature. The target URL is supplied from the Dashboard project scope; the Analyzer itself focuses on artifact metrics, network data, payloads, and controlled handoff to Repeater.
+The Dashboard **Open** button launches a dedicated Google Chrome/Chromium profile with Chrome DevTools Protocol (CDP) enabled. Network activity from pages opened in that dedicated browser profile is captured into **HTTP History**.
 
+Clicking a captured row displays the reconstructed raw HTTP request and response in the Request/Response panes.
 
-## v1.0 Workflow
-The Workflow page uses a desktop visual node editor with a node library, canvas, branches, and properties panel inspired by the supplied reference.
+The browser profile is intentionally isolated from the user's normal browser profile so the workbench can attach to it reliably without inspecting unrelated Chrome sessions.
 
-## Repeater UX refresh
-The Repeater is now arranged around a Burp-style manual testing flow: numbered request tabs, Send/Cancel/navigation controls, editable Pretty/Raw/Hex request views, Pretty/Raw/Hex/Render response views, request/response metadata footers, and request parsing from a raw HTTP message including Host/path handling.
+## Run
+
+```bash
+python -m pip install -r requirements.txt
+./run.sh
+```
+
+Google Chrome or Chromium must be available in `PATH` (`google-chrome`, `google-chrome-stable`, `chromium`, or `chromium-browser`).

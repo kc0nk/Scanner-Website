@@ -8,6 +8,7 @@ from PySide6.QtGui import QFont, QColor, QBrush, QPen
 from PySide6.QtWidgets import *
 from app.version import __version__
 from core.analyzer import WebAnalyzer, AnalysisResult
+from core.chrome_capture import ChromeCaptureThread, CapturedTransaction, launch_chrome, find_free_port
 
 BG="#050b1a"; PANEL="#0b1428"; BORDER="#1a2a48"; TEXT="#d8e3f3"; MUTED="#7f91aa"; CYAN="#11c8ef"; PURPLE="#9b5cff"; RED="#ff4f78"; GREEN="#21d7a5"; GOLD="#f5b82e"
 STYLE=f'''
@@ -87,7 +88,7 @@ class RepeaterWorker(QThread):
 
 class MainWindow(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle(f"CTF Exploit Workbench v{__version__}"); self.resize(1500,900); self.setStyleSheet(STYLE); self.result=None; self.worker=None
+        super().__init__(); self.setWindowTitle(f"CTF Exploit Workbench v{__version__}"); self.resize(1500,900); self.setStyleSheet(STYLE); self.result=None; self.worker=None; self.chrome_capture=None; self.chrome_process=None; self.chrome_profile=None; self.browser_records=[]; self.browser_row_map={}
         root=QWidget(); self.setCentralWidget(root); outer=QHBoxLayout(root); outer.setContentsMargins(0,0,0,0); outer.setSpacing(0); outer.addWidget(self.sidebar())
         body=QVBoxLayout(); body.setContentsMargins(0,0,0,0); body.setSpacing(0); body.addWidget(self.topbar()); self.stack=QStackedWidget(); body.addWidget(self.stack); outer.addLayout(body,1)
         self.pages={}
@@ -173,11 +174,128 @@ class MainWindow(QMainWindow):
 
     def open_dashboard_target(self):
         url=self.dashboard_url.text().strip()
-        if url:
-            self.show_page("Web Analyzer")
-            self.analyzer_target.setText(f"Target: {url}")
-            self.target_edit = QLineEdit()
-            self.target_edit.setText(url)
+        if not url:
+            return
+        if not url.lower().startswith(("http://", "https://")):
+            url = "https://" + url
+            self.dashboard_url.setText(url)
+        try:
+            self._start_chrome_capture(url)
+        except Exception as exc:
+            self.statusBar().showMessage(f"Chrome launch failed: {exc}", 7000)
+            return
+        self.show_page("Dashboard")
+        self.statusBar().showMessage(f"Chrome capture active • opened {url}", 5000)
+
+    def _start_chrome_capture(self, url):
+        # A dedicated browser profile keeps CDP capture isolated from the user's
+        # normal Chrome session. Every page in that profile is monitored.
+        if self.chrome_capture:
+            try:
+                self.chrome_capture.stop()
+                self.chrome_capture.wait(1200)
+            except Exception:
+                pass
+            self.chrome_capture = None
+
+        self.browser_records = []
+        self.browser_row_map = {}
+        self.history_table.setRowCount(0)
+        self.history_count.setText("0 requests")
+        self.dashboard_request.clear()
+        self.dashboard_response.clear()
+
+        port = find_free_port()
+        proc, _port, profile = launch_chrome(url, port)
+        self.chrome_process = proc
+        self.chrome_profile = profile
+        self.chrome_capture = ChromeCaptureThread(port, url, self)
+        self.chrome_capture.transaction.connect(self._chrome_transaction)
+        self.chrome_capture.updated.connect(self._chrome_transaction_updated)
+        self.chrome_capture.error.connect(lambda msg: self.statusBar().showMessage(f"Chrome capture error: {msg}", 7000))
+        self.chrome_capture.state.connect(lambda msg: self.statusBar().showMessage(msg, 3000))
+        self.chrome_capture.start()
+
+    @staticmethod
+    def _header_block(headers):
+        return "\n".join(f"{k}: {v}" for k, v in headers.items())
+
+    @staticmethod
+    def _request_path(url):
+        p=urlsplit(url)
+        path=p.path or "/"
+        return path + (("?" + p.query) if p.query else "")
+
+    def _captured_request_text(self, rec):
+        headers = dict(rec.request_headers)
+        # Chrome's CDP request headers may omit the Host header. Add it for a
+        # familiar Burp-like request representation.
+        if not any(k.lower() == "host" for k in headers):
+            headers = {"Host": urlsplit(rec.url).netloc, **headers}
+        first = f"{rec.method} {self._request_path(rec.url)} HTTP/1.1"
+        head = self._header_block(headers)
+        return first + ("\n" + head if head else "") + "\n\n" + (rec.request_body or "")
+
+    def _captured_response_text(self, rec):
+        status = rec.status or 0
+        phrase = rec.status_text or ""
+        first = f"HTTP/1.1 {status} {phrase}".rstrip()
+        head = self._header_block(rec.response_headers)
+        body = rec.response_body or ("\n[response body unavailable]" if status else "")
+        return first + ("\n" + head if head else "") + "\n\n" + body
+
+    def _chrome_transaction(self, rec: CapturedTransaction):
+        key=(rec.tab_id, rec.request_id)
+        if key in self.browser_row_map:
+            return self._chrome_transaction_updated(rec)
+        self.browser_row_map[key] = len(self.browser_records)
+        self.browser_records.append(rec)
+        row=self.history_table.rowCount()
+        self.history_table.insertRow(row)
+        self.browser_row_map[key]=row
+        self._fill_history_row(row, rec)
+        self.history_count.setText(f"{len(self.browser_records)} requests")
+
+    def _chrome_transaction_updated(self, rec: CapturedTransaction):
+        key=(rec.tab_id, rec.request_id)
+        row=self.browser_row_map.get(key)
+        if row is None:
+            return self._chrome_transaction(rec)
+        self.browser_records[row if row < len(self.browser_records) else -1] = rec
+        self._fill_history_row(row, rec)
+        if self.history_table.currentRow() == row:
+            self._show_captured_transaction(rec)
+
+    def _fill_history_row(self, row, rec):
+        from datetime import datetime as _dt
+        params = urlsplit(rec.url).query
+        values=[
+            rec.method, rec.url, "Yes" if params else "",
+            str(rec.status) if rec.status else "…",
+            str(rec.response_size) if rec.response_size else "—",
+            rec.mime_type or "—", "", "",
+            _dt.now().strftime("%H:%M:%S"),
+        ]
+        for col,val in enumerate(values):
+            item=self.history_table.item(row,col)
+            if item is None:
+                item=QTableWidgetItem()
+                self.history_table.setItem(row,col,item)
+            item.setText(str(val))
+        self.history_table.resizeRowToContents(row)
+
+    def _show_captured_transaction(self, rec):
+        self.dashboard_request.setPlainText(self._captured_request_text(rec))
+        self.dashboard_response.setPlainText(self._captured_response_text(rec))
+
+    def closeEvent(self, event):
+        if self.chrome_capture:
+            try:
+                self.chrome_capture.stop()
+                self.chrome_capture.wait(800)
+            except Exception:
+                pass
+        super().closeEvent(event)
 
     def analyzer(self):
         s,l=self.page()
@@ -236,12 +354,19 @@ class MainWindow(QMainWindow):
             for col,val in enumerate(vals):self.payload_table.setItem(row,col,QTableWidgetItem(val))
         self.payload_status.setText(f"Automatic payload execution: {len(r.payload_runs)} probes completed")
     def history_selected(self):
-        if not hasattr(self,"history_table") or not self.result:return
+        if not hasattr(self,"history_table"):
+            return
         row=self.history_table.currentRow()
-        if row < 0 or row >= len(self.result.requests):return
-        rec=self.result.requests[row]
-        self.dashboard_request.setPlainText(f"{rec.method} {rec.url}\n\nTarget: {self.result.target}")
-        self.dashboard_response.setPlainText(f"HTTP {rec.status}\n\nContent-Type: {rec.content_type}\nLength: {rec.size}")
+        if row < 0:
+            return
+        # Live Chrome traffic takes precedence over the old static analyzer data.
+        if row < len(self.browser_records):
+            self._show_captured_transaction(self.browser_records[row])
+            return
+        if self.result and row < len(self.result.requests):
+            rec=self.result.requests[row]
+            self.dashboard_request.setPlainText(f"{rec.method} {rec.url}\n\nTarget: {self.result.target}")
+            self.dashboard_response.setPlainText(f"HTTP {rec.status}\n\nContent-Type: {rec.content_type}\nLength: {rec.size}")
 
     def history_to_repeater(self,row,_col):
         if not self.result or row < 0 or row >= len(self.result.requests): return
