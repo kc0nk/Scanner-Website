@@ -421,7 +421,7 @@ class MainWindow(QMainWindow):
 
         self.analyzer_stack = QStackedWidget(); self.analyzer_stack.setObjectName("analyzerStack")
         self.module_pages = {}
-        for name in ["Overview","Site Map","Network","Secrets","WebSockets","Web Forms","JavaScript","Technologies","Cookies","Payloads"]:
+        for name in ["Overview","Site Map","Network","Secrets","JWT","Authorization","IDOR / BOLA","WebSockets","Web Forms","JavaScript","Technologies","Cookies","Payloads"]:
             page = self._build_analyzer_module_page(name); self.module_pages[name] = page; self.analyzer_stack.addWidget(page)
         rl.addWidget(self.analyzer_stack, 1)
 
@@ -454,6 +454,14 @@ class MainWindow(QMainWindow):
             return page
         if name == "Network":
             table=self._make_table(["METHOD","STATUS","URL","CONTENT TYPE","SIZE"]); table.cellDoubleClicked.connect(self.network_to_repeater); table.setContextMenuPolicy(Qt.CustomContextMenu); table.customContextMenuRequested.connect(self._network_context_menu); vl.addWidget(table); page.setProperty("table_widget", table); return page
+        if name == "JWT":
+            note=QLabel("JWT is analyzed from observed Authorization headers and cookies. Decoding is informational; no cryptographic weakness is inferred without evidence."); note.setWordWrap(True); note.setStyleSheet(f"color:{MUTED};font-size:10px;"); vl.addWidget(note)
+            table=self._make_table(["LOCATION","ALGORITHM","CLAIMS","ENDPOINT","TOKEN"]); vl.addWidget(table,1); page.setProperty("table_widget", table); return page
+        if name == "Authorization":
+            table=self._make_table(["TYPE","ENDPOINT","SOURCE"]); vl.addWidget(table,1); page.setProperty("table_widget", table); return page
+        if name == "IDOR / BOLA":
+            note=QLabel("Object references are observations only. IDOR/BOLA is not confirmed from an identifier alone."); note.setWordWrap(True); note.setStyleSheet(f"color:{MUTED};font-size:10px;"); vl.addWidget(note)
+            table=self._make_table(["TYPE","OBJECT REFERENCE","SOURCE"]); vl.addWidget(table,1); page.setProperty("table_widget", table); return page
         if name == "Payloads":
             note=QLabel("Controlled probes are generated only for observed input surfaces. A result is CONFIRMED only when concrete evidence is present."); note.setWordWrap(True); note.setStyleSheet(f"color:{MUTED};font-size:10px;"); vl.addWidget(note)
             table=self._make_table(["STATE","FAMILY","PARAMETER","PAYLOAD","STATUS","LENGTH","EVIDENCE","SOURCES"]); vl.addWidget(table,1); page.setProperty("table_widget", table)
@@ -570,6 +578,7 @@ class MainWindow(QMainWindow):
         counts={
             "REQUESTS":len(r.requests), "ENDPOINTS":len(endpoint_set), "PARAMETERS":len(params),
             "CONFIRMED":len(confirmed), "TESTED":tested, "SECRETS":len(r.secrets),
+            "JWT TOKENS":len(r.jwt_tokens), "IDOR SURFACES":len(r.idor_surfaces),
         }
         for key,val in counts.items(): self.metrics[key].setValue(val)
         self.summary_confirmed.setText(f"●  Confirmed     {len(confirmed)}"); self.summary_tested.setText(f"●  Tested          {tested}"); self.summary_not_confirmed.setText(f"●  Not confirmed   {not_confirmed}")
@@ -588,6 +597,14 @@ class MainWindow(QMainWindow):
         self._populate_simple_module("JavaScript", r.js_files, "captured HTML / network")
         self._populate_simple_module("Technologies", r.technologies, "headers / response signatures")
         self._populate_simple_module("Cookies", r.cookies, "captured headers")
+        jt=self._module_table("JWT"); jt.setRowCount(0)
+        for j in r.jwt_tokens:
+            row=jt.rowCount(); jt.insertRow(row); values=[j.location,j.algorithm or "—", ", ".join(j.claims.keys()) or "—",j.endpoint,j.token_preview]
+            for c,v in enumerate(values): jt.setItem(row,c,QTableWidgetItem(str(v)))
+        at=self._module_table("Authorization"); at.setRowCount(0)
+        for value in r.auth_surfaces: self._add_module_row("Authorization", ["AUTH SURFACE", value, "captured traffic"])
+        it=self._module_table("IDOR / BOLA"); it.setRowCount(0)
+        for value in r.idor_surfaces: self._add_module_row("IDOR / BOLA", ["OBJECT REFERENCE", value, "captured traffic"])
 
         pt=self._module_table("Payloads"); pt.setRowCount(0)
         for pr in r.payload_runs:

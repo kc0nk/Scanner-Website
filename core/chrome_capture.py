@@ -67,6 +67,8 @@ class ChromeCaptureThread(QThread):
     def _attach_tab(self, target_id: str, ws_url: str, navigate_initial: bool = False):
         records: dict[str, CapturedTransaction] = {}
         pending_body: dict[int, str] = {}
+        extra_request_headers: dict[str, dict[str, str]] = {}
+        extra_response_headers: dict[str, dict[str, str]] = {}
         counter = itertools.count(100)
         ws = None
         try:
@@ -139,8 +141,21 @@ class ChromeCaptureThread(QThread):
                         timestamp=float(p.get("timestamp", 0.0) or 0.0),
                         wall_time=float(p.get("wallTime", 0.0) or 0.0),
                     )
+                    merged_extra = extra_request_headers.pop(request_id, {})
+                    if merged_extra:
+                        record.request_headers.update(merged_extra)
                     records[request_id] = record
                     self.transaction.emit(record)
+
+                elif method == "Network.requestWillBeSentExtraInfo":
+                    headers = p.get("headers") or {}
+                    normalized = {str(k): str(v) for k, v in headers.items()}
+                    record = records.get(request_id)
+                    if record:
+                        record.request_headers.update(normalized)
+                        self.updated.emit(record)
+                    else:
+                        extra_request_headers[request_id] = normalized
 
                 elif method == "Network.responseReceived":
                     record = records.get(request_id)
@@ -150,8 +165,21 @@ class ChromeCaptureThread(QThread):
                     record.status = int(resp.get("status", 0) or 0)
                     record.status_text = resp.get("statusText", "") or ""
                     record.response_headers = {str(k): str(v) for k, v in (resp.get("headers") or {}).items()}
+                    merged_extra = extra_response_headers.pop(request_id, {})
+                    if merged_extra:
+                        record.response_headers.update(merged_extra)
                     record.mime_type = resp.get("mimeType", "") or ""
                     self.updated.emit(record)
+
+                elif method == "Network.responseReceivedExtraInfo":
+                    headers = p.get("headers") or {}
+                    normalized = {str(k): str(v) for k, v in headers.items()}
+                    record = records.get(request_id)
+                    if record:
+                        record.response_headers.update(normalized)
+                        self.updated.emit(record)
+                    else:
+                        extra_response_headers[request_id] = normalized
 
                 elif method == "Network.loadingFinished":
                     record = records.get(request_id)

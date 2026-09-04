@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from urllib.parse import urljoin, urlsplit, parse_qsl, urlencode, urlunsplit, quote_plus
+import base64
 import json
 import re
 import httpx
@@ -21,6 +22,15 @@ class RequestRecord:
     request_body: str = ""
     response_headers: dict[str, str] = field(default_factory=dict)
     duration_ms: int = 0
+
+
+@dataclass
+class JWTObservation:
+    location: str
+    token_preview: str
+    algorithm: str = ""
+    claims: dict = field(default_factory=dict)
+    endpoint: str = ""
 
 
 @dataclass
@@ -59,6 +69,9 @@ class AnalysisResult:
     secrets: list[str] = field(default_factory=list)
     websockets: list[str] = field(default_factory=list)
     payload_runs: list[PayloadRun] = field(default_factory=list)
+    jwt_tokens: list[JWTObservation] = field(default_factory=list)
+    idor_surfaces: list[str] = field(default_factory=list)
+    auth_surfaces: list[str] = field(default_factory=list)
 
 
 class WebAnalyzer:
@@ -311,30 +324,62 @@ class WebAnalyzer:
         return "TESTED", "no confirming evidence rule matched"
 
     @staticmethod
-    def _is_jwt(value: str) -> bool:
+    def _jwt_token(value: str) -> str:
         value = (value or "").strip()
         if value.lower().startswith("bearer "):
             value = value.split(None, 1)[1].strip()
-        return bool(re.fullmatch(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+", value))
+        return value if re.fullmatch(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+", value) else ""
+
+    @staticmethod
+    def _decode_jwt(token: str) -> tuple[str, dict]:
+        try:
+            parts = token.split(".")
+            if len(parts) != 3:
+                return "", {}
+            def dec(part: str):
+                raw = base64.urlsafe_b64decode(part + "=" * (-len(part) % 4))
+                return json.loads(raw.decode("utf-8", errors="replace"))
+            header = dec(parts[0]) or {}
+            claims = dec(parts[1]) or {}
+            return str(header.get("alg", "")), claims if isinstance(claims, dict) else {}
+        except Exception:
+            return "", {}
+
+    def _record_jwt(self, token: str, location: str, endpoint: str, result: AnalysisResult):
+        if not token:
+            return
+        alg, claims = self._decode_jwt(token)
+        preview = token[:18] + "…" if len(token) > 18 else token
+        key = (location, endpoint, preview)
+        if any((x.location, x.endpoint, x.token_preview) == key for x in result.jwt_tokens):
+            return
+        result.jwt_tokens.append(JWTObservation(location=location, token_preview=preview, algorithm=alg, claims=claims, endpoint=endpoint))
 
     def _passive_special_checks(self, rec, result: AnalysisResult):
         """Record factual auth/control observations without claiming exploitation."""
         req_headers = {str(k).lower(): str(v) for k, v in (getattr(rec, "request_headers", {}) or {}).items()}
+        endpoint = str(getattr(rec, 'url', '') or '')
         auth = req_headers.get("authorization", "")
-        if self._is_jwt(auth):
-            note = f"JWT observed in Authorization header: {getattr(rec, 'url', '')}"
-            if note not in result.secrets:
-                result.secrets.append(note)
+        token = self._jwt_token(auth)
+        if token:
+            self._record_jwt(token, "Authorization", endpoint, result)
+            note = f"JWT observed in Authorization header: {endpoint}"
+            if note not in result.auth_surfaces:
+                result.auth_surfaces.append(note)
+        if auth and "bearer " in auth.lower() and endpoint not in result.auth_surfaces:
+            result.auth_surfaces.append(endpoint)
 
         cookie_header = req_headers.get("cookie", "")
         for part in cookie_header.split(";"):
             if "=" not in part:
                 continue
             name, value = [x.strip() for x in part.split("=", 1)]
-            if self._is_jwt(value):
-                note = f"JWT observed in Cookie '{name}': {getattr(rec, 'url', '')}"
-                if note not in result.secrets:
-                    result.secrets.append(note)
+            token = self._jwt_token(value)
+            if token:
+                self._record_jwt(token, f"Cookie:{name}", endpoint, result)
+                note = f"JWT observed in Cookie '{name}': {endpoint}"
+                if note not in result.auth_surfaces:
+                    result.auth_surfaces.append(note)
 
         resp_headers = {str(k).lower(): str(v) for k, v in (getattr(rec, "response_headers", {}) or {}).items()}
         acao = resp_headers.get("access-control-allow-origin", "")
@@ -353,6 +398,11 @@ class WebAnalyzer:
             note = f"ID-like object reference observed: {url}"
             if note not in result.network:
                 result.network.append(note)
+            if url not in result.idor_surfaces:
+                result.idor_surfaces.append(url)
+        for hint in ("/login", "/logout", "/auth", "/session", "/profile", "/admin"):
+            if hint in url.lower() and url not in result.auth_surfaces:
+                result.auth_surfaces.append(url)
 
     def _probe_payloads(self, client: httpx.Client, result: AnalysisResult, log=None):
         query_records = []
@@ -581,7 +631,7 @@ class WebAnalyzer:
                           headers={"User-Agent": "CTF-Exploit-Workbench/3.0 (History Analyzer)"}) as client:
             self._probe_payloads(client, result, log=log)
 
-        for field_name in ("site_map", "network", "js_files", "technologies", "cookies", "secrets", "websockets"):
+        for field_name in ("site_map", "network", "js_files", "technologies", "cookies", "secrets", "websockets", "idor_surfaces", "auth_surfaces"):
             setattr(result, field_name, list(dict.fromkeys(getattr(result, field_name))))
         seen_forms = set(); unique_forms = []
         for item in result.forms:
