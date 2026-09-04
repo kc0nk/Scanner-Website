@@ -1,7 +1,3 @@
-# Build Info
-
-Version: 3.0.0
-Feature update: curated GitHub CTF/write-up payload knowledge base + parameter applicability routing.
-
-Validation:
-- Python source compiled successfully with `python -m py_compile`.
+CTF Exploit Workbench v3.0.0
+Analyzer extension: JWT / auth-access-control / business-logic-shop / CORS observations
+Payload KB remains curated; analyzer uses HTTP History as the primary source.

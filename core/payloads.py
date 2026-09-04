@@ -33,9 +33,16 @@ PAYLOAD_SOURCES = [
         "url": "https://github.com/Berkanktk/CyberSecurity",
         "topics": ["SQL injection"],
     },
+    {
+        "name": "OWASP Cheat Sheet Series",
+        "url": "https://github.com/OWASP/CheatSheetSeries",
+        "topics": ["JWT", "authentication", "authorization", "business logic", "web security"],
+    },
 ]
 
-# Family definitions. Payloads are intentionally short, controlled probes.
+# Family definitions. Entries are intentionally framed as controlled probes or
+# passive-analysis signatures; the analyzer must still require concrete evidence
+# before a vulnerability becomes CONFIRMED. Payloads are intentionally short, controlled probes.
 PAYLOAD_CATALOG = {
     "SQL Injection": {
         "payloads": ["'", '"', "' OR '1'='1", "' AND '1'='2", "1 ORDER BY 1-- -"],
@@ -91,7 +98,108 @@ PAYLOAD_CATALOG = {
         "content_types": ["application/xml", "text/xml"],
         "source_names": ["0xsyr0/Awesome-Cybersecurity-Handbooks"],
     },
+    "JWT Analysis": {
+        "payloads": ["JWT-DECODE-ONLY", "JWT-CLAIMS-INSPECTION"],
+        "parameter_hints": ["token", "access_token", "id_token", "jwt", "authorization", "auth"],
+        "content_types": ["application/json", "application/x-www-form-urlencoded", "text/plain"],
+        "source_names": ["OWASP Cheat Sheet Series"],
+        "passive_only": True,
+    },
+    "Auth & Access Control": {
+        "payloads": ["AUTH-MISSING-CHECK", "SESSION-MISSING-CHECK"],
+        "parameter_hints": ["role", "user_id", "uid", "account", "admin", "profile"],
+        "content_types": ["application/json", "application/x-www-form-urlencoded"],
+        "source_names": ["OWASP Cheat Sheet Series"],
+        "methods": ["GET", "HEAD", "OPTIONS"],
+    },
+    "Business Logic / Shop": {
+        "payloads": ["0", "1", "999999", "test"],
+        "parameter_hints": ["price", "amount", "total", "quantity", "qty", "discount", "coupon", "promo", "product_id", "item_id", "cart_id"],
+        "content_types": ["application/json", "application/x-www-form-urlencoded", "text/html"],
+        "source_names": ["OWASP Cheat Sheet Series"],
+        "methods": ["GET", "HEAD"],
+    },
+    "CORS": {
+        "payloads": ["CORS-ORIGIN-CHECK"],
+        "parameter_hints": [],
+        "content_types": ["application/json", "text/html", "text/plain"],
+        "source_names": ["OWASP Cheat Sheet Series"],
+        "passive_only": True,
+    },
+    "Mass Assignment": {
+        "payloads": ["__role_test__", "__is_admin_test__"],
+        "parameter_hints": ["role", "is_admin", "admin", "permissions", "price", "discount"],
+        "content_types": ["application/json", "application/x-www-form-urlencoded"],
+        "source_names": ["OWASP Cheat Sheet Series"],
+        "methods": ["GET", "HEAD"],
+        "passive_only": True,
+    },
+    "GraphQL": {
+        "payloads": ["GRAPHQL-INTROSPECTION-OBSERVE", "GRAPHQL-QUERY-OBSERVE"],
+        "parameter_hints": ["query", "operationName", "variables"],
+        "content_types": ["application/json", "application/graphql"],
+        "source_names": ["OWASP Cheat Sheet Series"],
+        "passive_only": True,
+    },
+    "File Upload": {
+        "payloads": ["UPLOAD-SURFACE-OBSERVE"],
+        "parameter_hints": ["file", "upload", "attachment", "document"],
+        "content_types": ["multipart/form-data"],
+        "source_names": ["OWASP Cheat Sheet Series"],
+        "passive_only": True,
+    },
+    "IDOR / BOLA": {
+        "payloads": ["IDOR-OBJECT-ID-OBSERVE", "IDOR-PEER-OBJECT-OBSERVE"],
+        "parameter_hints": ["id", "user_id", "uid", "account_id", "profile_id", "order_id", "invoice_id", "document_id", "file_id", "item_id", "product_id", "cart_id"],
+        "content_types": ["application/json", "application/x-www-form-urlencoded", "text/html"],
+        "source_names": ["OWASP Cheat Sheet Series"],
+        "passive_only": True,
+    },
+    "CSRF": {
+        "payloads": ["CSRF-TOKEN-PRESENCE-OBSERVE", "CSRF-SAME-SITE-OBSERVE"],
+        "parameter_hints": [],
+        "content_types": ["application/x-www-form-urlencoded", "multipart/form-data", "application/json"],
+        "source_names": ["OWASP Cheat Sheet Series"],
+        "methods": ["POST", "PUT", "PATCH", "DELETE"],
+        "passive_only": True,
+    },
+    "Rate Limiting": {
+        "payloads": ["RATE-LIMIT-OBSERVE"],
+        "parameter_hints": ["login", "otp", "code", "token", "reset", "search"],
+        "content_types": ["application/json", "application/x-www-form-urlencoded"],
+        "source_names": ["OWASP Cheat Sheet Series"],
+        "passive_only": True,
+    },
+    "HTTP Parameter Pollution": {
+        "payloads": ["HPP-DUPLICATE-PARAM-OBSERVE"],
+        "parameter_hints": ["id", "q", "search", "sort", "filter", "redirect", "next"],
+        "content_types": [],
+        "source_names": ["OWASP Cheat Sheet Series"],
+        "passive_only": True,
+    },
+    "Host Header Injection": {
+        "payloads": ["HOST-HEADER-OBSERVE"],
+        "parameter_hints": [],
+        "content_types": ["text/html", "application/json"],
+        "source_names": ["OWASP Cheat Sheet Series"],
+        "passive_only": True,
+    },
+    "Prototype Pollution": {
+        "payloads": ["__proto__-OBSERVE", "constructor.prototype-OBSERVE"],
+        "parameter_hints": ["__proto__", "prototype", "constructor", "config", "options"],
+        "content_types": ["application/json", "application/x-www-form-urlencoded"],
+        "source_names": ["OWASP Cheat Sheet Series"],
+        "passive_only": True,
+    },
+    "Cache Behavior": {
+        "payloads": ["CACHE-KEY-OBSERVE", "CACHE-CONTROL-OBSERVE"],
+        "parameter_hints": ["q", "query", "url", "path", "id"],
+        "content_types": ["text/html", "application/json", "text/plain"],
+        "source_names": ["OWASP Cheat Sheet Series"],
+        "passive_only": True,
+    },
 }
+
 
 PAYLOADS = {family: data["payloads"] for family, data in PAYLOAD_CATALOG.items()}
 

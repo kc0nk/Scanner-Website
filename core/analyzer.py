@@ -6,7 +6,7 @@ import json
 import re
 import httpx
 from bs4 import BeautifulSoup
-from core.payloads import PAYLOADS, applicable_families, source_urls_for
+from core.payloads import PAYLOADS, PAYLOAD_CATALOG, applicable_families, source_urls_for
 
 
 @dataclass
@@ -295,7 +295,64 @@ class WebAnalyzer:
                     return "TESTED", f"XXE-related marker observed: {marker} (external entity resolution not independently proven)"
             return "TESTED", "no XXE-specific evidence observed"
 
+        if family == "Business Logic / Shop":
+            # Keep this family conservative: response deltas alone never confirm a pricing/bypass flaw.
+            return "TESTED", "business-logic mutation observed; purchase/discount bypass requires explicit semantic validation"
+
+        if family == "Auth & Access Control":
+            return "TESTED", "access-control surface observed; authorization bypass requires an authenticated-vs-unauthenticated semantic comparison"
+
+        if family == "JWT Analysis":
+            return "TESTED", "JWT token observed/inspected; cryptographic or authorization weakness not independently proven"
+
+        if family == "CORS":
+            return "TESTED", "CORS header observed; exploitability requires origin/credential validation"
+
         return "TESTED", "no confirming evidence rule matched"
+
+    @staticmethod
+    def _is_jwt(value: str) -> bool:
+        value = (value or "").strip()
+        if value.lower().startswith("bearer "):
+            value = value.split(None, 1)[1].strip()
+        return bool(re.fullmatch(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+", value))
+
+    def _passive_special_checks(self, rec, result: AnalysisResult):
+        """Record factual auth/control observations without claiming exploitation."""
+        req_headers = {str(k).lower(): str(v) for k, v in (getattr(rec, "request_headers", {}) or {}).items()}
+        auth = req_headers.get("authorization", "")
+        if self._is_jwt(auth):
+            note = f"JWT observed in Authorization header: {getattr(rec, 'url', '')}"
+            if note not in result.secrets:
+                result.secrets.append(note)
+
+        cookie_header = req_headers.get("cookie", "")
+        for part in cookie_header.split(";"):
+            if "=" not in part:
+                continue
+            name, value = [x.strip() for x in part.split("=", 1)]
+            if self._is_jwt(value):
+                note = f"JWT observed in Cookie '{name}': {getattr(rec, 'url', '')}"
+                if note not in result.secrets:
+                    result.secrets.append(note)
+
+        resp_headers = {str(k).lower(): str(v) for k, v in (getattr(rec, "response_headers", {}) or {}).items()}
+        acao = resp_headers.get("access-control-allow-origin", "")
+        acac = resp_headers.get("access-control-allow-credentials", "")
+        if acao:
+            cors_note = f"CORS observed: ACAO={acao}" + (f"; ACAC={acac}" if acac else "") + f" on {getattr(rec, 'url', '')}"
+            if cors_note not in result.network:
+                result.network.append(cors_note)
+
+        # Record ID-like object references as an attack-surface observation.
+        # This is deliberately passive: proving IDOR/BOLA requires an appropriate
+        # second authorization context and is never inferred from the identifier alone.
+        url = str(getattr(rec, "url", "") or "")
+        object_tokens = re.findall(r"(?:^|[/?&_=.-])(\d{1,12})(?=$|[/?&_=.-])", url)
+        if object_tokens:
+            note = f"ID-like object reference observed: {url}"
+            if note not in result.network:
+                result.network.append(note)
 
     def _probe_payloads(self, client: httpx.Client, result: AnalysisResult, log=None):
         query_records = []
@@ -322,14 +379,31 @@ class WebAnalyzer:
         total = 0
         for rec, parameter in query_records:
             ctype = self._header_get(rec.request_headers, "content-type").lower()
-            total += sum(len(PAYLOADS.get(family, [])) for family in applicable_families(parameter, ctype, body=rec.request_body))
+            families = []
+            for family in applicable_families(parameter, ctype, body=rec.request_body):
+                meta = PAYLOAD_CATALOG.get(family, {})
+                if meta.get("passive_only"):
+                    continue
+                allowed_methods = set(meta.get("methods", []))
+                if allowed_methods and rec.method.upper() not in allowed_methods:
+                    continue
+                families.append(family)
+            total += sum(len(PAYLOADS.get(family, [])) for family in families)
         if log:
             log(f"PAYLOAD RUN: {total} controlled probes planned from observed HTTP History inputs")
         completed = 0
 
         for rec, parameter in query_records:
             ctype = self._header_get(rec.request_headers, "content-type").lower()
-            families = applicable_families(parameter, ctype, body=rec.request_body)
+            families = []
+            for family in applicable_families(parameter, ctype, body=rec.request_body):
+                meta = PAYLOAD_CATALOG.get(family, {})
+                if meta.get("passive_only"):
+                    continue
+                allowed_methods = set(meta.get("methods", []))
+                if allowed_methods and rec.method.upper() not in allowed_methods:
+                    continue
+                families.append(family)
             for family in families:
                 for payload in PAYLOADS.get(family, []):
                     mutation = self._mutate_observed_input(rec, parameter, payload)
@@ -409,6 +483,7 @@ class WebAnalyzer:
             size = int(getattr(rec, "response_size", 0) or 0)
             req_headers = dict(getattr(rec, "request_headers", {}) or {})
             resp_headers = dict(getattr(rec, "response_headers", {}) or {})
+            self._passive_special_checks(rec, result)
 
             result.requests.append(RequestRecord(
                 method=method,
