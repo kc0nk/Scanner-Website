@@ -580,7 +580,15 @@ class MainWindow(QMainWindow):
             "CONFIRMED":len(confirmed), "TESTED":tested, "SECRETS":len(r.secrets),
             "JWT TOKENS":len(r.jwt_tokens), "IDOR SURFACES":len(r.idor_surfaces),
         }
-        for key,val in counts.items(): self.metrics[key].setValue(val)
+        # Only update metric cards that are actually rendered in the current UI.
+        # The result model may expose additional counters (e.g. JWT/IDOR) that are
+        # intentionally shown in their dedicated analyzer modules rather than the
+        # six compact headline cards. Never let a new result counter crash the UI.
+        for key, val in counts.items():
+            metric = self.metrics.get(key)
+            if metric is not None:
+                metric.setValue(val)
+
         self.summary_confirmed.setText(f"●  Confirmed     {len(confirmed)}"); self.summary_tested.setText(f"●  Tested          {tested}"); self.summary_not_confirmed.setText(f"●  Not confirmed   {not_confirmed}")
 
         nt=self._module_table("Network"); nt.setRowCount(0)
