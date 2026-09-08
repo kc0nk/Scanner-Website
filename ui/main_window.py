@@ -455,7 +455,7 @@ class MainWindow(QMainWindow):
         if name == "Network":
             table=self._make_table(["METHOD","STATUS","URL","CONTENT TYPE","SIZE"]); table.cellDoubleClicked.connect(self.network_to_repeater); table.setContextMenuPolicy(Qt.CustomContextMenu); table.customContextMenuRequested.connect(self._network_context_menu); vl.addWidget(table); page.setProperty("table_widget", table); return page
         if name == "JWT":
-            note=QLabel("JWT is analyzed from observed Authorization headers and cookies. Decoding is informational; no cryptographic weakness is inferred without evidence."); note.setWordWrap(True); note.setStyleSheet(f"color:{MUTED};font-size:10px;"); vl.addWidget(note)
+            note=QLabel("JWT is analyzed from observed Authorization headers and cookies. Active probes test alg=none, claim tampering, and signature validation; CONFIRMED requires acceptance of a mutated token plus rejection of the invalid-token control."); note.setWordWrap(True); note.setStyleSheet(f"color:{MUTED};font-size:10px;"); vl.addWidget(note)
             table=self._make_table(["LOCATION","ALGORITHM","CLAIMS","ENDPOINT","TOKEN"]); vl.addWidget(table,1); page.setProperty("table_widget", table); return page
         if name == "Authorization":
             table=self._make_table(["TYPE","ENDPOINT","SOURCE"]); vl.addWidget(table,1); page.setProperty("table_widget", table); return page

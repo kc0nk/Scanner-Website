@@ -99,11 +99,16 @@ PAYLOAD_CATALOG = {
         "source_names": ["0xsyr0/Awesome-Cybersecurity-Handbooks"],
     },
     "JWT Analysis": {
-        "payloads": ["JWT-DECODE-ONLY", "JWT-CLAIMS-INSPECTION"],
+        "payloads": [
+            "JWT-ALG-NONE",
+            "JWT-ALG-NONE-CLAIM-TAMPER",
+            "JWT-CLAIM-TAMPER",
+            "JWT-SIGNATURE-INVALID",
+        ],
         "parameter_hints": ["token", "access_token", "id_token", "jwt", "authorization", "auth"],
         "content_types": ["application/json", "application/x-www-form-urlencoded", "text/plain"],
         "source_names": ["OWASP Cheat Sheet Series"],
-        "passive_only": True,
+        "active_jwt": True,
     },
     "Auth & Access Control": {
         "payloads": ["AUTH-MISSING-CHECK", "SESSION-MISSING-CHECK"],
