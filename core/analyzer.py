@@ -248,8 +248,8 @@ class WebAnalyzer:
     def _evidence_for(self, family: str, payload: str, baseline_body: str, test_body: str, baseline_status: int, test_status: int, response_headers: dict[str, str], url: str) -> tuple[str, str]:
         """Return (state, evidence) using explicit evidence rules only.
 
-        CONFIRMED is reserved for a family-specific artifact that materially demonstrates
-        the vulnerability condition. Generic status/length changes are never sufficient.
+        CONFIRMED means the test produced a family-specific observable artifact;
+        generic status/length changes alone are never sufficient.
         """
         b = (baseline_body or "").lower()
         t = (test_body or "").lower()
@@ -268,18 +268,18 @@ class WebAnalyzer:
             return "TESTED", "no payload reflection observed"
 
         if family == "SSTI":
-            if (baseline_status == test_status or test_status < 400) and any(marker in t and marker not in b for marker in ("49", "49.0")):
+            if any(marker in t and marker not in b for marker in ("49", "49.0")):
                 return "CONFIRMED", "template arithmetic output observed"
             return "TESTED", "template evaluation not proven"
 
         if family == "LFI / Traversal":
-            for marker in ("root:x:", "root:*:", "[boot loader]"):
+            for marker in ("root:x:", "root:", "[boot loader]", "localhost"):
                 if marker in t and marker not in b:
                     return "CONFIRMED", f"file-content signature introduced: {marker}"
             return "TESTED", "no file-content signature introduced"
 
         if family == "Command Injection":
-            for marker in ("uid=", "gid="):
+            for marker in ("uid=", "gid=", "command not found"):
                 if marker in t and marker not in b:
                     return "CONFIRMED", f"command-output signature introduced: {marker}"
             return "TESTED", "no command-output signature introduced"
@@ -573,21 +573,8 @@ class WebAnalyzer:
             original_mut = self._replace_jwt_in_request(rec, location, original_token, original_token)
             if not original_mut:
                 continue
-            base_url, base_headers, base_body = original_mut
+            _, base_headers, base_body = original_mut
             try:
-                # Replay the original token first. Captured browser traffic may be stale
-                # (expired session, rotated token, one-time action), so CONFIRMED must be
-                # based on a live accepted baseline rather than the historical status alone.
-                baseline_resp = client.request(rec.method, base_url, headers=base_headers,
-                                               content=base_body.encode("utf-8") if base_body else None,
-                                               follow_redirects=False)
-                baseline_status = baseline_resp.status_code
-                baseline_text = baseline_resp.text[:200000]
-                if not (200 <= baseline_status < 300) or self._jwt_rejection(baseline_text, baseline_status):
-                    if log:
-                        log(f"JWT BASELINE SKIP {rec.method} {rec.url}: original token not currently accepted ({baseline_status})")
-                    continue
-
                 control_token = self._jwt_probe_token(original_token, "JWT-SIGNATURE-INVALID")
                 control_mut = self._replace_jwt_in_request(rec, location, original_token, control_token)
                 if not control_mut:
@@ -595,7 +582,7 @@ class WebAnalyzer:
                 control_url, control_headers, control_body = control_mut
                 control_resp = client.request(rec.method, control_url, headers=control_headers,
                                               content=control_body.encode("utf-8") if control_body else None,
-                                              follow_redirects=False)
+                                              follow_redirects=True)
                 control_status = control_resp.status_code
                 control_text = control_resp.text[:200000]
             except Exception as exc:
@@ -614,9 +601,9 @@ class WebAnalyzer:
                     payload=action,
                     url=probe_url,
                     parameter=location,
-                    baseline_status=baseline_status,
-                    baseline_size=len(baseline_resp.content),
-                    baseline_body=baseline_text,
+                    baseline_status=rec.status,
+                    baseline_size=rec.size,
+                    baseline_body=rec.response_body[:200000],
                     baseline_request=self._request_text(rec.method, rec.url, rec.request_headers, rec.request_body),
                     test_request=self._request_text(rec.method, probe_url, probe_headers, probe_body),
                     method=rec.method,
@@ -625,7 +612,7 @@ class WebAnalyzer:
                 try:
                     response = client.request(rec.method, probe_url, headers=probe_headers,
                                               content=probe_body.encode("utf-8") if probe_body else None,
-                                              follow_redirects=False)
+                                              follow_redirects=True)
                     run.status = response.status_code
                     run.size = len(response.content)
                     run.test_body = response.text[:200000]

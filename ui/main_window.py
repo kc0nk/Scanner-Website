@@ -1,5 +1,6 @@
 from __future__ import annotations
 import html
+import re
 from datetime import datetime
 from urllib.parse import urlsplit, parse_qsl, urlencode, urlunsplit
 import httpx
@@ -85,12 +86,13 @@ class RepeaterWorker(QThread):
     failed=Signal(str)
     cancelled=Signal()
 
-    def __init__(self, method, url, headers, body):
+    def __init__(self, method, url, headers, body, http_version="AUTO"):
         super().__init__()
         self.method=method.upper()
         self.url=url
         self.headers=headers
         self.body=body
+        self.http_version=(http_version or "AUTO").upper()
         self.stop_requested=False
 
     def run(self):
@@ -98,7 +100,14 @@ class RepeaterWorker(QThread):
         started=time.perf_counter()
         try:
             timeout=httpx.Timeout(connect=5.0, read=1.0, write=5.0, pool=5.0)
-            with httpx.Client(timeout=timeout, follow_redirects=True, verify=False) as client:
+            with httpx.Client(
+                timeout=timeout,
+                follow_redirects=False,
+                verify=False,
+                # AUTO lets HTTPX negotiate HTTP/2 via ALPN when the server supports it.
+                # HTTP/1.1 explicitly disables HTTP/2; HTTP/2 enables it.
+                http2=(self.http_version in ("AUTO", "HTTP/2")),
+            ) as client:
                 with client.stream(
                     self.method,
                     self.url,
@@ -116,6 +125,15 @@ class RepeaterWorker(QThread):
                         return
                     content=b"".join(chunks)
                     elapsed=int((time.perf_counter()-started)*1000)
+                    if self.http_version == "HTTP/2" and response.http_version != "HTTP/2":
+                        raise RuntimeError(
+                            f"HTTP/2 requested, but server negotiated {response.http_version}. "
+                            "Use AUTO or HTTP/1.1 for this target."
+                        )
+                    if self.http_version == "HTTP/1.1" and response.http_version != "HTTP/1.1":
+                        raise RuntimeError(
+                            f"HTTP/1.1 requested, but client negotiated {response.http_version}."
+                        )
                     status=f"{response.status_code} {response.reason_phrase}"
                     header_text="\n".join(f"{k}: {v}" for k,v in response.headers.items())
                     body_text=content.decode("utf-8", errors="replace")
@@ -270,9 +288,14 @@ class MainWindow(QMainWindow):
         return path + (("?" + p.query) if p.query else "")
 
     def _captured_request_text(self, rec):
-        headers = dict(rec.request_headers)
-        # Chrome's CDP request headers may omit the Host header. Add it for a
-        # familiar Burp-like request representation.
+        # CDP can expose HTTP/2 pseudo-headers (:method, :path, :authority,
+        # :scheme). They are protocol metadata, not legal HTTP/1.x header
+        # fields, so never copy them into the editable Repeater request.
+        pseudo = {":method", ":path", ":authority", ":scheme", ":protocol"}
+        headers = {str(k): str(v) for k, v in (rec.request_headers or {}).items()
+                   if str(k).strip() and str(k).strip().lower() not in pseudo}
+        # Chrome's CDP request headers may omit Host. Add it for a familiar
+        # Burp-like request representation.
         if not any(k.lower() == "host" for k in headers):
             headers = {"Host": urlsplit(rec.url).netloc, **headers}
         first = f"{rec.method} {self._request_path(rec.url)} HTTP/1.1"
@@ -580,15 +603,7 @@ class MainWindow(QMainWindow):
             "CONFIRMED":len(confirmed), "TESTED":tested, "SECRETS":len(r.secrets),
             "JWT TOKENS":len(r.jwt_tokens), "IDOR SURFACES":len(r.idor_surfaces),
         }
-        # Only update metric cards that are actually rendered in the current UI.
-        # The result model may expose additional counters (e.g. JWT/IDOR) that are
-        # intentionally shown in their dedicated analyzer modules rather than the
-        # six compact headline cards. Never let a new result counter crash the UI.
-        for key, val in counts.items():
-            metric = self.metrics.get(key)
-            if metric is not None:
-                metric.setValue(val)
-
+        for key,val in counts.items(): self.metrics[key].setValue(val)
         self.summary_confirmed.setText(f"●  Confirmed     {len(confirmed)}"); self.summary_tested.setText(f"●  Tested          {tested}"); self.summary_not_confirmed.setText(f"●  Not confirmed   {not_confirmed}")
 
         nt=self._module_table("Network"); nt.setRowCount(0)
@@ -750,10 +765,15 @@ class MainWindow(QMainWindow):
             host=parsed.netloc
             path=parsed.path or "/"
             if parsed.query:path += "?"+parsed.query
-            request=f"{method} {path} HTTP/2\nHost: {host}\n"+headers
+            request=f"{method} {path} HTTP/1.1\nHost: {host}\n"+headers
         if body:
             request += ("\n" if not request.endswith("\n") else "") + "\n" + body
         self.new_repeater_tab(method,url,request,activate=True)
+
+    def _set_repeater_engine_label(self, protocol=None):
+        if protocol is None:
+            protocol = self.rep_protocol.currentText() if hasattr(self, "rep_protocol") else "AUTO"
+        self.rep_engine.setText(f"HTTP client  •  {protocol} • TLS verify off")
 
     def repeater(self):
         root = QWidget(); root.setObjectName("repeaterRoot")
@@ -762,6 +782,7 @@ class MainWindow(QMainWindow):
         self.rep_sessions = []
         self.rep_history = []
         self.rep_history_index = -1
+        self.rep_http_version = "AUTO"
         self.rep_active_thread = None
         self.rep_request_editor = None
         self.rep_response_editors = {}
@@ -785,6 +806,12 @@ class MainWindow(QMainWindow):
         self.rep_send.setToolTip("Send request (Ctrl+Enter)"); self.rep_send.clicked.connect(self.send_repeater); ab.addWidget(self.rep_send)
         self.rep_cancel = QPushButton("Cancel"); self.rep_cancel.setFixedHeight(40); self.rep_cancel.setMinimumWidth(78); self.rep_cancel.setEnabled(False)
         self.rep_cancel.clicked.connect(self.cancel_repeater); ab.addWidget(self.rep_cancel)
+        self.rep_protocol = QComboBox()
+        self.rep_protocol.addItems(["AUTO", "HTTP/1.1", "HTTP/2"])
+        self.rep_protocol.setFixedHeight(40); self.rep_protocol.setFixedWidth(105)
+        self.rep_protocol.setToolTip("Wire protocol: AUTO negotiates; HTTP/1.1 disables h2; HTTP/2 enables h2")
+        self.rep_protocol.currentTextChanged.connect(lambda v: self._set_repeater_engine_label(v))
+        ab.addWidget(self.rep_protocol)
         gear = QPushButton("⚙"); gear.setFixedSize(40, 40); gear.setToolTip("Repeater settings")
         gear.clicked.connect(lambda: self.statusBar().showMessage("HTTP client: httpx • TLS verification disabled", 3000)); ab.addWidget(gear)
         sep1 = QFrame(); sep1.setFrameShape(QFrame.VLine); sep1.setFixedWidth(1); sep1.setStyleSheet(f"background:{BORDER}; margin:7px 2px;"); ab.addWidget(sep1)
@@ -862,7 +889,7 @@ class MainWindow(QMainWindow):
         editor.setStyleSheet(f"QPlainTextEdit{{background:#050d1a;border:0;border-radius:0;padding:10px;color:#c9d8ec;selection-background-color:#174b77;}}")
 
     def _request_placeholder(self):
-        return ("GET / HTTP/2\n"
+        return ("GET / HTTP/1.1\n"
                 "Host: target.example\n"
                 "User-Agent: CTF-Exploit-Workbench/1.0\n"
                 "Accept: */*\n")
@@ -904,6 +931,7 @@ class MainWindow(QMainWindow):
             "status": self.rep_status_badge.text(),
             "time": getattr(self,"_rep_last_time","—"),
             "size": getattr(self,"_rep_last_size","—"),
+            "http_version": getattr(self, "rep_http_version", "AUTO"),
         }
 
     def switch_repeater_tab(self,index):
@@ -927,6 +955,10 @@ class MainWindow(QMainWindow):
             self.rep_response_hex.setPlainText(self._to_hex(response))
             self.rep_response_render.setHtml(self._render_http_response(response))
             self.rep_method_badge.setText(session.get("method") or "GET")
+            self.rep_http_version = (session.get("http_version") or "AUTO").upper()
+            if hasattr(self, "rep_protocol"):
+                self.rep_protocol.setCurrentText(self.rep_http_version if self.rep_http_version in ("AUTO", "HTTP/1.1", "HTTP/2") else "AUTO")
+                self._set_repeater_engine_label(self.rep_protocol.currentText())
             target=session.get("url") or self._extract_url_from_request(session.get("request") or "")
             self.rep_target_hint.setText("Target: " + (target or "—"))
             self.rep_status_badge.setText(session.get("status") or "—")
@@ -1008,37 +1040,70 @@ class MainWindow(QMainWindow):
             return "<style>body{font-family:DejaVu Sans;background:#071023;color:#d8e3f3;padding:18px}a{color:#4bb8ff}</style>"+preview
         return f"<pre style='white-space:pre-wrap;color:#c9d8ec;font-family:DejaVu Sans Mono'>{escaped}</pre>"
 
-    def _parse_repeater_request(self,text, fallback_url=""):
-        text=text.replace("\r\n","\n")
+    def _parse_repeater_request(self,text, fallback_url="", forced_version=None):
+        text=(text or "").replace("\r\n","\n").replace("\r","\n")
         parts=text.split("\n\n",1); head=parts[0]; body=parts[1] if len(parts)>1 else ""
-        lines=head.splitlines(); method="GET"; target=fallback_url; headers={}
+        lines=head.splitlines(); method="GET"; target=(fallback_url or "").strip(); headers={}; request_version="HTTP/1.1"
+        allowed_methods={"GET","POST","PUT","PATCH","DELETE","HEAD","OPTIONS","TRACE"}
+        pseudo={":method", ":path", ":authority", ":scheme", ":protocol"}
+        hop_by_hop={"connection", "proxy-connection", "keep-alive", "transfer-encoding", "upgrade", "content-length"}
         if lines:
             first=lines[0].split()
-            if len(first)>=2 and first[0].upper() in ["GET","POST","PUT","PATCH","DELETE","HEAD","OPTIONS"]:
+            if len(first)>=2 and first[0].upper() in allowed_methods:
                 method=first[0].upper(); path=first[1]
-            else:path="/"
-        for line in lines[1:]:
-            if ":" in line:
-                k,v=line.split(":",1); headers[k.strip()]=v.strip()
-        host=headers.get("Host","").strip()
+                if len(first) >= 3 and first[2].upper() in ("HTTP/1.1", "HTTP/2"):
+                    request_version=first[2].upper()
+            else:
+                raise ValueError("Invalid request line. Use: METHOD /path HTTP/1.1 or HTTP/2")
+        else:
+            raise ValueError("Empty request")
+        for raw in lines[1:]:
+            line=raw.strip("\r")
+            if not line.strip():
+                continue
+            if line.startswith(":"):
+                # Ignore HTTP/2 pseudo-headers copied from CDP captures.
+                continue
+            if ":" not in line:
+                continue
+            k,v=line.split(":",1); k=k.strip(); v=v.strip()
+            if not k or k.lower() in pseudo or k.lower() in hop_by_hop:
+                continue
+            # RFC-compatible header-name guard; prevents httpx errors such as
+            # 'Illegal header name b""'.
+            if not re.match(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$", k):
+                continue
+            headers[k]=v
+        host=next((v for k,v in headers.items() if k.lower()=="host"), "").strip()
         if path.startswith("http://") or path.startswith("https://"):
             target=path
         elif host:
-            target="https://"+host+(path if path.startswith("/") else "/"+path)
+            scheme=urlsplit(target).scheme if target else "https"
+            target=f"{scheme or 'https'}://{host}"+(path if path.startswith("/") else "/"+path)
         if not target:
             raise ValueError("No target URL: add a Host header or open a valid URL from the Dashboard")
-        return method,target,headers,body
+        return method,target,headers,body,(forced_version or request_version).upper()
 
     def send_repeater(self):
         if self.rep_active_thread and self.rep_active_thread.isRunning(): return
         text=self.rep_request_pretty.toPlainText().strip()
+        selected_protocol = self.rep_protocol.currentText() if hasattr(self, "rep_protocol") else "AUTO"
         try:
-            method,url,headers,body=self._parse_repeater_request(text,self.rep_target_hint.text().replace("Target: ","",1).strip())
+            method,url,headers,body,request_line_version=self._parse_repeater_request(
+                text,
+                self.rep_target_hint.text().replace("Target: ","",1).strip(),
+                None,
+            )
         except Exception as e:
             self.rep_response_raw.setPlainText("REQUEST ERROR\n\n"+str(e)); self.rep_response_views.setCurrentIndex(0); return
+
         self.rep_target_hint.setText("Target: "+url); self.rep_method_badge.setText(method)
-        self.rep_send.setEnabled(False); self.rep_cancel.setEnabled(True); self.rep_status_badge.setText("…"); self.rep_request_info.setText("Sending request…")
-        self.rep_active_thread=RepeaterWorker(method,url,headers,body)
+        # The editable request line documents the request syntax, while the
+        # combo controls the actual wire protocol used by httpx.
+        self.rep_http_version = selected_protocol
+        self.rep_send.setEnabled(False); self.rep_cancel.setEnabled(True); self.rep_status_badge.setText("…"); self.rep_request_info.setText(f"Sending {selected_protocol}…")
+        self._set_repeater_engine_label(selected_protocol)
+        self.rep_active_thread=RepeaterWorker(method,url,headers,body,selected_protocol)
         self.rep_active_thread.done.connect(self.repeater_done)
         self.rep_active_thread.failed.connect(self.repeater_failed)
         self.rep_active_thread.cancelled.connect(self.repeater_cancelled)
