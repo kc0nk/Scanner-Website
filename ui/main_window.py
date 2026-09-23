@@ -88,10 +88,11 @@ QPushButton#navItem {{
     border-bottom: 2px solid transparent;
     border-radius: 0px;
     color: {TEXT_DIM};
-    padding: 0px 8px;
+    padding: 0px 4px;
     margin: 0px;
     font-size: 11px;
     font-weight: 700;
+    text-align: center;
     letter-spacing: 0px;
 }}
 QPushButton#navItem:hover {{
@@ -104,10 +105,11 @@ QPushButton#navItemActive {{
     border-bottom: 2px solid {GOLD_BRIGHT};
     border-radius: 0px;
     color: {GOLD_BRIGHT};
-    padding: 0px 8px;
+    padding: 0px 4px;
     margin: 0px;
     font-size: 11px;
     font-weight: 800;
+    text-align: center;
 }}
 QPushButton#navUtility {{
     background: transparent;
@@ -127,15 +129,17 @@ QPushButton#navUtility:hover {{
 class MainWindow(QMainWindow):
     """KCONK UI shell. Navigation is intentionally rebuilt before modules."""
 
+    # Exactly eight primary modules. Widths are intentionally fixed so the
+    # navbar never reflows or clips when the desktop window is resized.
     NAV_ITEMS = [
-        ("DASHBOARD", 98),
-        ("WORKFLOW", 102),
-        ("PROXY", 82),
-        ("INTRUDER", 96),
-        ("REPEATER", 96),
-        ("SCANNING", 96),
-        ("COLLABORATOR", 118),
-        ("META WORKFLOW NC", 160),
+        ("DASHBOARD", 100),
+        ("WORKFLOW", 104),
+        ("PROXY", 84),
+        ("INTRUDER", 98),
+        ("REPEATER", 98),
+        ("SCANNING", 98),
+        ("COLLABORATOR", 124),
+        ("META WORKFLOW NC", 174),
     ]
 
     def __init__(self):
@@ -178,12 +182,12 @@ class MainWindow(QMainWindow):
         bar.setFixedSize(DESIGN_WIDTH, NAVBAR_HEIGHT)
 
         root = QHBoxLayout(bar)
-        root.setContentsMargins(16, 0, 16, 0)
+        root.setContentsMargins(18, 0, 18, 0)
         root.setSpacing(0)
 
         # ---- Brand -------------------------------------------------------
         brand = QWidget()
-        brand.setFixedWidth(214)
+        brand.setFixedWidth(220)
         brand_layout = QHBoxLayout(brand)
         brand_layout.setContentsMargins(0, 0, 0, 0)
         brand_layout.setSpacing(9)
@@ -214,18 +218,29 @@ class MainWindow(QMainWindow):
         divider.setObjectName("navDivider")
         divider.setFixedSize(1, 28)
         root.addWidget(divider)
-        root.addSpacing(8)
+        root.addSpacing(10)
 
         # ---- Main navigation -------------------------------------------
+        # Keep the eight modules in one fixed-width rail. This is easier to
+        # reason about than relying on layout compression/stretching.
+        nav_rail = QWidget()
+        nav_width = sum(width for _, width in self.NAV_ITEMS)
+        nav_rail.setFixedSize(nav_width, NAVBAR_HEIGHT)
+        nav_layout = QHBoxLayout(nav_rail)
+        nav_layout.setContentsMargins(0, 0, 0, 0)
+        nav_layout.setSpacing(0)
+
         for item_name, width in self.NAV_ITEMS:
             btn = QPushButton(item_name)
             btn.setObjectName("navItem")
             btn.setFixedSize(width, NAVBAR_HEIGHT)
             btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+            btn.setFocusPolicy(Qt.NoFocus)
             btn.clicked.connect(lambda _checked=False, n=item_name: self.select_nav(n))
             self.nav_buttons[item_name] = btn
-            root.addWidget(btn)
+            nav_layout.addWidget(btn)
 
+        root.addWidget(nav_rail)
         root.addStretch(1)
 
         # ---- Utilities --------------------------------------------------
