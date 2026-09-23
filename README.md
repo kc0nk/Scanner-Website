@@ -1,13 +1,25 @@
-# CTF Exploit Workbench v3.0.0
+# KCONK Suite
 
-v3.0 is traffic-driven: Web Analyzer consumes the HTTP History captured by the Chromium session.
+UI/UX shell for the KCONK security suite, redesigned as a Burp Suite-inspired desktop interface using the supplied KCONK emblem.
 
-Added analysis families:
-- JWT Analysis (passive observation + controlled active probes)
-- Auth & Access Control (non-mutating GET/HEAD/OPTIONS checks)
-- Business Logic / Shop (non-mutating GET/HEAD checks)
-- CORS observation
+## Current scope
 
-A finding is only CONFIRMED when family-specific evidence is present. Generic status/length changes do not confirm a vulnerability. JWT probes use the captured token context and a rejected invalid-signature control before marking an authentication/signature bypass CONFIRMED.
+This revision intentionally removes the previous scanner/analyzer/network functionality. It is a visual UI foundation only.
 
-Payload references are curated from public web-security/CTF knowledge bases. The application does not scrape GitHub at runtime.
+## Run
+
+```bash
+./run.sh
+```
+
+or:
+
+```bash
+python -m app.main
+```
+
+## Structure
+
+- `app/` — application entry point and version
+- `ui/` — UI shell
+- `assets/kconk_logo.png` — supplied KCONK emblem
