@@ -1,12 +1,16 @@
+# Source layout
+
+```text
 Scanner-Website/
 ├── app/
-│   ├── main.py
-│   ├── version.py
-│   └── __init__.py
 ├── assets/
-│   └── kconk_logo.png
+├── core/
+│   ├── analyzer.py
+│   ├── chrome_capture.py
+│   └── payloads.py
+├── extensions/
 ├── ui/
-│   ├── main_window.py
-│   └── __init__.py
 ├── requirements.txt
-└── run.sh
+├── run.sh
+└── README.md
+```
