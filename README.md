@@ -1,26 +1,30 @@
-# KCONK Suite 4.0 — Functional Burp-style Workbench
+# KCONK Suite 5.0 — Functional Web Security Workbench
 
-KCONK Suite is a PySide6 desktop security workbench with a fixed 1500×920 design canvas so resizing the desktop does not reflow the UI. The navigation and workflow model are inspired by common Burp Suite concepts, while the implementation is independent.
+KCONK Suite is an independent PySide6 desktop workbench whose workflow mirrors the major Burp-style testing stages: dashboard/task control, target scope and site mapping, proxy history/interception, browser traffic capture, repeater, intruder, sequencing, decoding, comparison, extensions and project data. The current implementation is independent of Burp Suite internals.
+
+## Fixed UI
+
+The entire visual workbench is rendered inside a fixed 1500×920 design canvas. A larger desktop leaves unused space around the canvas; a smaller desktop scrolls the canvas instead of reflowing or scaling the design.
 
 ## Modules
 
-- Dashboard — target launch, live capture summary, recent traffic.
-- Target — scope management and site-map / passive analysis.
-- Proxy — Chrome DevTools network capture and traffic inspection.
-- Intruder — controlled sequential payload replay against a selected request.
-- Repeater — manual HTTP request editing and replay, with response views.
-- Collaborator — local canary generation for OOB correlation workflows.
-- Sequencer — token randomness / entropy inspection from samples.
-- Decoder — Base64, URL, Hex, HTML entity and JWT decode/encode helpers.
-- Comparer — request/response/text diffing.
-- Logger — unified application and traffic event log.
-- Organizer — saved request collection.
-- Extensions — local Python extension discovery and loading.
-- Discover — CTF-oriented passive/controlled web analysis.
+- Dashboard — tasks, live browser traffic and traffic-driven analysis.
+- Target — scope, site map and controlled passive/active analysis.
+- Proxy — HTTP history, local HTTP listener, intercept/release/drop and context actions. HTTPS browser traffic is captured through Chrome DevTools Protocol, which keeps the browser session decrypted for inspection.
+- Intruder — controlled parameter/payload replay with response metrics.
+- Repeater — manual HTTP request editing/replay and saved-request workflow.
+- Collaborator — local canary generation for authorized out-of-band correlation notes.
+- Sequencer — token sample entropy inspection.
+- Decoder — encoding/decoding and common hashes.
+- Comparer — message/text diff.
+- Logger — unified event log.
+- Organizer — saved request templates.
+- Extensions — local Python `register(app)` extensions.
+- Discover — analysis artifacts and finding evidence.
 
-## Fixed UI behavior
+## Proxy model
 
-The application uses a fixed 1500×920 canvas inside a scroll area. Large windows keep the same visual geometry; smaller windows scroll rather than scale or rearrange the UI.
+The built-in listener supports cleartext HTTP forwarding and intercept. HTTP CONNECT is transparently tunnelled. For browser HTTPS, KCONK uses CDP network events to inspect decrypted requests and responses rather than implementing its own TLS interception CA.
 
 ## Run
 
@@ -28,10 +32,10 @@ The application uses a fixed 1500×920 canvas inside a scroll area. Large window
 ./run.sh
 ```
 
-Install dependencies with:
+Install dependencies:
 
 ```bash
 python -m pip install -r requirements.txt
 ```
 
-The uploaded Burp reference repository is a launcher/installation wrapper rather than Burp Suite source. This project therefore implements independent, Burp-style workflows instead of copying proprietary internals.
+Use the project only against systems and traffic you are authorized to assess.

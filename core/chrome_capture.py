@@ -283,7 +283,7 @@ def find_chrome() -> str | None:
     return None
 
 
-def launch_chrome(url: str, port: int | None = None):
+def launch_chrome(url: str, port: int | None = None, proxy_port: int | None = None):
     chrome = find_chrome()
     if not chrome:
         raise FileNotFoundError("Google Chrome/Chromium was not found in PATH")
@@ -298,6 +298,7 @@ def launch_chrome(url: str, port: int | None = None):
         "--disable-sync",
         "--disable-features=Translate",
         "--remote-allow-origins=*",
+        *( [f"--proxy-server=http://127.0.0.1:{proxy_port}"] if proxy_port else [] ),
         # Start blank. The capture thread attaches first, enables Network,
         # and then performs the real navigation so the initial request is captured.
         "about:blank",

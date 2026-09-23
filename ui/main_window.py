@@ -15,11 +15,12 @@ from pathlib import Path
 import httpx
 
 from PySide6.QtCore import Qt, QThread, Signal, QTimer
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QPixmap, QCursor
 from PySide6.QtWidgets import (
     QApplication,
     QAbstractItemView,
     QComboBox,
+    QCheckBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -27,6 +28,8 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QFileDialog,
+    QMenu,
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
@@ -46,6 +49,9 @@ from PySide6.QtWidgets import (
 from app.version import __version__
 from core.analyzer import AnalysisResult, WebAnalyzer
 from core.chrome_capture import CapturedTransaction, ChromeCaptureThread, find_free_port, launch_chrome
+from core.http_proxy import LocalHttpProxy, ProxyMessage
+from core.http_tools import (parse_http_request as parse_http_request_core, request_to_raw, response_to_raw, is_in_scope, ScopeRule, hash_text, decode_jwt)
+from core.project_store import export_project, import_project
 from core.payloads import PAYLOAD_CATALOG
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -276,6 +282,10 @@ class MainWindow(QMainWindow):
         self.analysis_worker: AnalysisWorker | None = None
         self.repeater_worker: HttpReplayWorker | None = None
         self.intruder_worker: IntruderWorker | None = None
+        self.local_proxy: LocalHttpProxy | None = None
+        self.proxy_messages: dict[str, ProxyMessage] = {}
+        self.scope_rules: list[ScopeRule] = []
+        self.proxy_history_filter = ""
 
         viewport = QScrollArea()
         viewport.setObjectName("viewport")
@@ -350,7 +360,7 @@ class MainWindow(QMainWindow):
             b = QPushButton(name); b.setObjectName("topnav"); b.setFixedWidth(width)
             b.clicked.connect(lambda _, n=name: self.show_page(n)); self.top_buttons[name] = b; outer.addWidget(b)
         outer.addStretch(1)
-        for glyph, handler in [("◉", lambda: self.new_live_capture()), ("☾", lambda: self.log_event("UI theme: dark")), ("⚙", lambda: self.show_page("EXTENSIONS"))]:
+        for glyph, handler in [("◉", lambda: self.new_live_capture()), ("☾", lambda: self.log_event("UI theme: dark")), ("⚙", lambda: self.project_menu())]:
             b = QPushButton(glyph); b.setFixedSize(34, 34); b.setStyleSheet(f"QPushButton{{border:0;background:transparent;color:{GOLD2};font-size:17px;}}QPushButton:hover{{background:#10261a;border-radius:8px;}}"); b.clicked.connect(handler); outer.addWidget(b)
         return bar
 
@@ -458,15 +468,25 @@ class MainWindow(QMainWindow):
             self.logger_table.insertRow(0); self.logger_table.setItem(0, 0, QTableWidgetItem(stamp)); self.logger_table.setItem(0, 1, QTableWidgetItem(message))
 
     def new_scan(self):
-        self.show_page("TARGET"); self.target_input.setFocus(); self.log_event("New target analysis task")
+        self.show_page("TARGET"); self.scope_input.setFocus(); self.log_event("New target analysis task")
 
     def new_live_capture(self):
-        target = self.dashboard_target.text().strip() if hasattr(self, "dashboard_target") else ""
+        target = self.proxy_target.text().strip() if hasattr(self, "proxy_target") else ""
         if not target:
-            target = self.target_input.text().strip() if hasattr(self, "target_input") else ""
-        if not target: target = "https://example.com"; self.dashboard_target.setText(target)
-        if not re.match(r"^https?://", target, re.I): target = "https://" + target
+            target = self.dashboard_target.text().strip() if hasattr(self, "dashboard_target") else ""
+        if not target:
+            target = self.scope_input.text().strip() if hasattr(self, "scope_input") else ""
+        if not target:
+            target = "https://example.com"
+        if hasattr(self, "dashboard_target"):
+            self.dashboard_target.setText(target)
+        if not re.match(r"^https?://", target, re.I):
+            target = "https://" + target
         try:
+            # Route the browser through the local listener when it is active.
+            if not self.local_proxy:
+                self.start_proxy_listener()
+                time.sleep(0.15)
             self.start_capture(target)
             self.show_page("PROXY")
         except Exception as exc:
@@ -475,10 +495,12 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ capture
     def start_capture(self, target: str):
         self.stop_capture(False)
+        self.stop_proxy_listener()
         self.records.clear(); self.record_by_request.clear()
         self.proxy_table.setRowCount(0); self.dashboard_table.setRowCount(0)
         port = find_free_port()
-        proc, _port, profile = launch_chrome(target, port)
+        proxy_port = self.local_proxy.port if self.local_proxy and self.local_proxy.isRunning() else None
+        proc, _port, profile = launch_chrome(target, port, proxy_port)
         self.chrome_process = proc; self.chrome_profile = profile
         self.capture = ChromeCaptureThread(port, target, self)
         self.capture.transaction.connect(self.on_transaction)
@@ -578,6 +600,7 @@ class MainWindow(QMainWindow):
 
         cols = QHBoxLayout(); cols.setSpacing(14)
         left = self.card(560, 650); lv = QVBoxLayout(left); lv.setContentsMargins(18, 16, 18, 16); lv.addWidget(label("Items added to site map", 13, TEXT, True)); self.dashboard_table = self.make_traffic_table(); self.dashboard_table.itemSelectionChanged.connect(lambda: self.show_dashboard_row()); lv.addWidget(self.dashboard_table, 1)
+        dash_detail = QSplitter(Qt.Horizontal); dash_detail.setFixedHeight(180); self.dashboard_request = QPlainTextEdit(); self.dashboard_request.setReadOnly(True); self.dashboard_response = QPlainTextEdit(); self.dashboard_response.setReadOnly(True); dash_detail.addWidget(self.dashboard_request); dash_detail.addWidget(self.dashboard_response); dash_detail.setSizes([270,270]); lv.addWidget(dash_detail)
         right = QVBoxLayout(); cfg = self.card(554, 220); cl = QVBoxLayout(cfg); cl.setContentsMargins(18, 16, 18, 16); cl.addWidget(label("Task configuration", 13, TEXT, True)); cl.addWidget(label("Task type:   Live passive crawl", 11, TEXT2)); cl.addWidget(label("Scope:       Proxy (all traffic)", 11, TEXT2)); cl.addWidget(label("Configuration: Add links / same-domain traffic / suite scope.", 11, TEXT2)); stop = QPushButton("Stop capture"); stop.setObjectName("danger"); stop.clicked.connect(lambda: self.stop_capture(True)); cl.addWidget(stop, 0, Qt.AlignLeft); right.addWidget(cfg)
         prog = self.card(554, 190); pl = QVBoxLayout(prog); pl.setContentsMargins(18, 16, 18, 16); pl.addWidget(label("Task progress", 13, TEXT, True)); self.dashboard_progress = label("Site map items added: 0\nResponses processed: 0\nResponses queued: 0", 11, TEXT2); pl.addWidget(self.dashboard_progress); right.addWidget(prog)
         log = self.card(554, 220); ll = QVBoxLayout(log); ll.setContentsMargins(18, 16, 18, 16); ll.addWidget(label("Task log", 13, TEXT, True)); self.dashboard_log = QPlainTextEdit(); self.dashboard_log.setReadOnly(True); ll.addWidget(self.dashboard_log); right.addWidget(log)
@@ -591,7 +614,9 @@ class MainWindow(QMainWindow):
             self.dashboard_request.setPlainText(self.request_text(rec)); self.dashboard_response.setPlainText(self.response_text(rec))
 
     def make_traffic_table(self) -> QTableWidget:
-        t = QTableWidget(0, 6); t.setHorizontalHeaderLabels(["METHOD", "URL", "STATUS", "LENGTH", "MIME TYPE", "TIME"]); t.setSelectionBehavior(QAbstractItemView.SelectRows); t.setColumnWidth(0, 75); t.setColumnWidth(1, 280); t.setColumnWidth(2, 70); t.setColumnWidth(3, 80); t.setColumnWidth(4, 120); t.setColumnWidth(5, 80); return t
+        t = QTableWidget(0, 6); t.setHorizontalHeaderLabels(["METHOD", "URL", "STATUS", "LENGTH", "MIME TYPE", "TIME"]); t.setSelectionBehavior(QAbstractItemView.SelectRows); t.setSelectionMode(QAbstractItemView.SingleSelection); t.setColumnWidth(0, 75); t.setColumnWidth(1, 280); t.setColumnWidth(2, 70); t.setColumnWidth(3, 80); t.setColumnWidth(4, 120); t.setColumnWidth(5, 80)
+        t.setContextMenuPolicy(Qt.CustomContextMenu); t.customContextMenuRequested.connect(lambda pos, table=t: self.traffic_context_menu(table, pos))
+        return t
 
     # --------------------------------------------------------------- target
     def page_target(self) -> QWidget:
@@ -602,8 +627,17 @@ class MainWindow(QMainWindow):
         info = self.card(414, 650); iv = QVBoxLayout(info); iv.setContentsMargins(16, 16, 16, 16); iv.addWidget(label("Target detail", 13, TEXT, True)); self.target_details = QPlainTextEdit(); self.target_details.setReadOnly(True); iv.addWidget(self.target_details); grid.addWidget(info); l.addLayout(grid); return w
 
     def add_scope(self):
-        value = self.scope_input.text().strip();
-        if value: self.log_event(f"Scope added: {value}")
+        value = self.scope_input.text().strip()
+        if not value:
+            return
+        pattern = value if "*" in value else (value.rstrip("/") + "*")
+        if not re.match(r"^https?://", pattern, re.I):
+            pattern = "https://" + pattern
+        rule = ScopeRule(pattern=pattern, include=True)
+        if rule not in self.scope_rules:
+            self.scope_rules.append(rule)
+        self.log_event(f"Scope added: {pattern}")
+        self.refresh_traffic_filters()
 
     def start_analysis(self):
         target = self.scope_input.text().strip() or self.dashboard_target.text().strip()
@@ -625,7 +659,7 @@ class MainWindow(QMainWindow):
         for url in result.site_map:
             sp = urllib.parse.urlsplit(url); host = sp.netloc or sp.path; root = QTreeWidgetItem([host, "host"]); leaf = QTreeWidgetItem([url, "URL"]); root.addChild(leaf); self.site_tree.addTopLevelItem(root)
         self.site_tree.expandAll()
-        self.target_details.setPlainText(json.dumps({"target":result.target,"requests":len(result.requests),"forms":len(result.forms),"js_files":len(result.js_files),"technologies":result.technologies,"cookies":result.cookies,"secrets":result.secrets,"jwt_tokens":[asdict(x) for x in result.jwt_tokens],"websockets":result.websockets,"findings":len(result.payload_runs)}, indent=2, ensure_ascii=False))
+        self.target_details.setPlainText(json.dumps({"target":result.target,"scope":[r.pattern for r in self.scope_rules],"requests":len(result.requests),"forms":len(result.forms),"js_files":len(result.js_files),"technologies":result.technologies,"cookies":result.cookies,"secrets":result.secrets,"jwt_tokens":[asdict(x) for x in result.jwt_tokens],"websockets":result.websockets,"findings":len(result.payload_runs)}, indent=2, ensure_ascii=False))
         self.log_event(f"Analysis complete: {len(result.site_map)} URLs, {len(result.payload_runs)} test runs")
         self.show_page("TARGET")
 
@@ -635,10 +669,163 @@ class MainWindow(QMainWindow):
 
     # --------------------------------------------------------------- proxy
     def page_proxy(self) -> QWidget:
-        w, l = self.page_frame("Proxy", "Live browser traffic and request inspection")
-        toolbar = self.card(1128, 68); tl = QHBoxLayout(toolbar); tl.setContentsMargins(14, 12, 14, 12); tl.addWidget(label("Target", 10, MUTED, True)); self.proxy_target = QLineEdit(); self.proxy_target.setFixedWidth(450); tl.addWidget(self.proxy_target); start = QPushButton("Start capture"); start.setObjectName("primary"); start.clicked.connect(lambda: self.start_capture(self.normalize_url(self.proxy_target.text()))); tl.addWidget(start); stop = QPushButton("Stop"); stop.setObjectName("danger"); stop.clicked.connect(lambda: self.stop_capture(True)); tl.addWidget(stop); add_spacer(tl); tl.addWidget(label("CDP network capture", 10, GOLD, True)); l.addWidget(toolbar)
-        split = QSplitter(Qt.Vertical); split.setFixedHeight(690); self.proxy_table = self.make_traffic_table(); self.proxy_table.itemSelectionChanged.connect(lambda: self.show_proxy_selection()); split.addWidget(self.proxy_table)
-        detail = QSplitter(Qt.Horizontal); self.proxy_request = QPlainTextEdit(); self.proxy_response = QPlainTextEdit(); detail.addWidget(self.proxy_request); detail.addWidget(self.proxy_response); detail.setSizes([540,540]); split.addWidget(detail); split.setSizes([380,290]); l.addWidget(split); return w
+        w, l = self.page_frame("Proxy", "HTTP listener, browser capture, intercept and HTTP history")
+        toolbar = self.card(1128, 76)
+        tl = QHBoxLayout(toolbar); tl.setContentsMargins(14, 10, 14, 10); tl.setSpacing(8)
+        tl.addWidget(label("Listener", 10, MUTED, True))
+        self.proxy_host = QLineEdit("127.0.0.1"); self.proxy_host.setFixedWidth(125); tl.addWidget(self.proxy_host)
+        self.proxy_port = QLineEdit("8080"); self.proxy_port.setFixedWidth(72); tl.addWidget(self.proxy_port)
+        start_listener = QPushButton("Start listener"); start_listener.setObjectName("primary"); start_listener.clicked.connect(self.start_proxy_listener); tl.addWidget(start_listener)
+        stop_listener = QPushButton("Stop"); stop_listener.setObjectName("danger"); stop_listener.clicked.connect(self.stop_proxy_listener); tl.addWidget(stop_listener)
+        self.proxy_intercept = QCheckBox("Intercept HTTP"); self.proxy_intercept.setChecked(False); self.proxy_intercept.stateChanged.connect(lambda state: self.set_proxy_intercept(state != 0)); tl.addWidget(self.proxy_intercept)
+        add_spacer(tl)
+        self.proxy_target = QLineEdit(); self.proxy_target.setPlaceholderText("https://target.example"); self.proxy_target.setFixedWidth(300); tl.addWidget(self.proxy_target)
+        start_browser = QPushButton("Open browser"); start_browser.clicked.connect(lambda: self.new_live_capture()); tl.addWidget(start_browser)
+        l.addWidget(toolbar)
+
+        filters = self.card(1128, 48); fl = QHBoxLayout(filters); fl.setContentsMargins(12, 7, 12, 7); fl.addWidget(label("Search", 10, MUTED, True))
+        self.proxy_filter = QLineEdit(); self.proxy_filter.setPlaceholderText("host, URL, method, status…"); self.proxy_filter.setFixedWidth(420); self.proxy_filter.textChanged.connect(self.refresh_traffic_filters); fl.addWidget(self.proxy_filter)
+        self.proxy_scope_only = QCheckBox("Show in-scope only"); self.proxy_scope_only.stateChanged.connect(self.refresh_traffic_filters); fl.addWidget(self.proxy_scope_only)
+        clear = QPushButton("Clear history"); clear.clicked.connect(self.clear_traffic_history); fl.addWidget(clear); add_spacer(fl); fl.addWidget(label("HTTP listener handles cleartext HTTP; CDP handles decrypted browser HTTPS.", 9, MUTED)); l.addWidget(filters)
+
+        tabs = QTabWidget(); tabs.setFixedSize(1128, 610)
+        history = QWidget(); hv = QVBoxLayout(history); hv.setContentsMargins(6, 8, 6, 6)
+        self.proxy_table = self.make_traffic_table(); self.proxy_table.itemSelectionChanged.connect(self.show_proxy_selection); hv.addWidget(self.proxy_table, 1)
+        detail = QSplitter(Qt.Horizontal); detail.setFixedHeight(285)
+        req_card = self.card(548, 280); rv = QVBoxLayout(req_card); rv.setContentsMargins(12, 12, 12, 12); rv.addWidget(label("Request", 12, TEXT, True)); self.proxy_request = QPlainTextEdit(); rv.addWidget(self.proxy_request); detail.addWidget(req_card)
+        res_card = self.card(548, 280); sv = QVBoxLayout(res_card); sv.setContentsMargins(12, 12, 12, 12); sv.addWidget(label("Response", 12, TEXT, True)); self.proxy_response = QPlainTextEdit(); sv.addWidget(self.proxy_response); detail.addWidget(res_card)
+        detail.setSizes([548, 548]); hv.addWidget(detail)
+        tabs.addTab(history, "HTTP history")
+
+        intercept = QWidget(); iv = QVBoxLayout(intercept); iv.setContentsMargins(8, 8, 8, 8)
+        self.proxy_intercept_table = QTableWidget(0, 6); self.proxy_intercept_table.setHorizontalHeaderLabels(["ID", "METHOD", "URL", "STATE", "CLIENT", "TIME"]); self.proxy_intercept_table.setSelectionBehavior(QAbstractItemView.SelectRows); self.proxy_intercept_table.setColumnWidth(0, 90); self.proxy_intercept_table.setColumnWidth(1, 70); self.proxy_intercept_table.setColumnWidth(2, 430); self.proxy_intercept_table.setColumnWidth(3, 90); self.proxy_intercept_table.setColumnWidth(4, 160); self.proxy_intercept_table.setColumnWidth(5, 90); iv.addWidget(self.proxy_intercept_table, 1)
+        buttons = QHBoxLayout(); rel = QPushButton("Forward selected"); rel.setObjectName("primary"); rel.clicked.connect(self.release_selected_intercept); drop = QPushButton("Drop selected"); drop.setObjectName("danger"); drop.clicked.connect(self.drop_selected_intercept); torep = QPushButton("Send to Repeater"); torep.clicked.connect(self.intercept_to_repeater); toint = QPushButton("Send to Intruder"); toint.clicked.connect(self.intercept_to_intruder); buttons.addWidget(rel); buttons.addWidget(drop); buttons.addWidget(torep); buttons.addWidget(toint); add_spacer(buttons); iv.addLayout(buttons)
+        tabs.addTab(intercept, "Intercept")
+        l.addWidget(tabs)
+        return w
+
+    # -------------------------------------------------------------- local proxy
+    def start_proxy_listener(self):
+        if self.local_proxy and self.local_proxy.isRunning():
+            return
+        try:
+            host = self.proxy_host.text().strip() or "127.0.0.1"
+            port = int(self.proxy_port.text().strip())
+            if not (1 <= port <= 65535):
+                raise ValueError("Port must be 1-65535")
+            self.local_proxy = LocalHttpProxy(host, port, self)
+            self.local_proxy.message.connect(self.on_proxy_message)
+            self.local_proxy.response.connect(self.on_proxy_response)
+            self.local_proxy.error.connect(lambda m: self.log_event(f"Proxy listener error: {m}"))
+            self.local_proxy.state.connect(self.log_event)
+            self.local_proxy.start()
+            self.log_event(f"HTTP proxy listener starting on {host}:{port}")
+        except Exception as exc:
+            QMessageBox.warning(self, "Proxy listener", str(exc))
+
+    def stop_proxy_listener(self):
+        if self.local_proxy:
+            try: self.local_proxy.stop()
+            except Exception: pass
+            self.local_proxy = None
+            self.log_event("HTTP proxy listener stopped")
+
+    def set_proxy_intercept(self, enabled: bool):
+        if self.local_proxy:
+            self.local_proxy.set_intercept(enabled)
+        self.log_event(f"HTTP intercept {'enabled' if enabled else 'disabled'}")
+
+    def on_proxy_message(self, msg: ProxyMessage):
+        self.proxy_messages[msg.message_id] = msg
+        if msg.state == "QUEUED" and self.local_proxy and self.local_proxy.intercept:
+            row = self.proxy_intercept_table.rowCount(); self.proxy_intercept_table.insertRow(row)
+            values = [msg.message_id, msg.method, msg.url, msg.state, msg.client, time.strftime("%H:%M:%S", time.localtime(msg.created_at))]
+            for col, value in enumerate(values): self.proxy_intercept_table.setItem(row, col, QTableWidgetItem(str(value)))
+            self.proxy_intercept_table.item(row, 0).setData(Qt.UserRole, msg.message_id)
+            self.log_event(f"Intercepted: {msg.method} {msg.url}")
+
+    def on_proxy_response(self, msg: ProxyMessage):
+        self.log_event(f"Proxy forwarded: {msg.method} {msg.url} → {msg.status} ({msg.response_size} bytes)")
+        # Local HTTP listener traffic is also represented in the HTTP history.
+        response_headers = {}; response_body = ""
+        if msg.response_raw:
+            head, sep, response_body = msg.response_raw.partition("\n\n")
+            for line in head.splitlines()[1:]:
+                if ":" in line:
+                    k, v = line.split(":", 1); response_headers[k.strip()] = v.strip()
+        rec = CapturedTransaction(request_id=f"proxy-{msg.message_id}", tab_id="local-proxy", resource_type="Document", method=msg.method, url=msg.url, request_headers=msg.headers, request_body=msg.body, status=msg.status, response_headers=response_headers, response_body=response_body, response_size=msg.response_size, timestamp=msg.created_at, duration_ms=msg.duration_ms)
+        self.record_by_request[rec.request_id] = rec; self.records.append(rec); self.fill_traffic_row(rec); self.refresh_traffic_filters()
+
+    def _selected_proxy_message(self) -> ProxyMessage | None:
+        row = self.proxy_intercept_table.currentRow()
+        if row < 0: return None
+        item = self.proxy_intercept_table.item(row, 0)
+        return self.proxy_messages.get(item.data(Qt.UserRole) if item else "")
+
+    def release_selected_intercept(self):
+        msg = self._selected_proxy_message()
+        if msg and self.local_proxy:
+            self.local_proxy.release(msg.message_id); self.log_event(f"Released intercept: {msg.message_id}")
+            self._remove_intercept_row(msg.message_id)
+
+    def drop_selected_intercept(self):
+        msg = self._selected_proxy_message()
+        if msg and self.local_proxy:
+            self.local_proxy.drop(msg.message_id); self.log_event(f"Dropped intercept: {msg.message_id}")
+            self._remove_intercept_row(msg.message_id)
+
+    def _remove_intercept_row(self, message_id: str):
+        for row in range(self.proxy_intercept_table.rowCount() - 1, -1, -1):
+            item = self.proxy_intercept_table.item(row, 0)
+            if item and item.data(Qt.UserRole) == message_id:
+                self.proxy_intercept_table.removeRow(row); break
+
+    def intercept_to_repeater(self):
+        msg = self._selected_proxy_message()
+        if not msg: return
+        self.prepare_repeater(msg.method, msg.url, request_to_raw(msg.method, msg.url, msg.headers, msg.body))
+        self.show_page("REPEATER"); self.log_event(f"Sent intercepted request to Repeater: {msg.method} {msg.url}")
+
+    def intercept_to_intruder(self):
+        msg = self._selected_proxy_message()
+        if not msg: return
+        self.intruder_request.setPlainText(request_to_raw(msg.method, msg.url, msg.headers, msg.body))
+        self.show_page("INTRUDER"); self.log_event(f"Sent intercepted request to Intruder: {msg.method} {msg.url}")
+
+    def clear_traffic_history(self):
+        self.records.clear(); self.record_by_request.clear(); self.proxy_table.setRowCount(0); self.dashboard_table.setRowCount(0); self.log_event("HTTP history cleared")
+
+    def refresh_traffic_filters(self, *_):
+        query = self.proxy_filter.text().strip().lower() if hasattr(self, "proxy_filter") else ""
+        only_scope = bool(self.proxy_scope_only.isChecked()) if hasattr(self, "proxy_scope_only") else False
+        for table in [getattr(self, "proxy_table", None), getattr(self, "dashboard_table", None)]:
+            if table is None: continue
+            for row in range(table.rowCount()):
+                vals = [table.item(row, c).text().lower() if table.item(row, c) else "" for c in range(table.columnCount())]
+                rid = table.item(row, 1).data(Qt.UserRole) if table.item(row,1) else ""
+                rec = self.record_by_request.get(rid)
+                matches = not query or any(query in v for v in vals)
+                scope_ok = True if not only_scope else bool(rec and is_in_scope(rec.url, self.scope_rules))
+                table.setRowHidden(row, not (matches and scope_ok))
+
+    def traffic_context_menu(self, table: QTableWidget, pos):
+        item = table.itemAt(pos)
+        if not item: return
+        row = item.row(); url_item = table.item(row, 1); rec = self.record_by_request.get(url_item.data(Qt.UserRole)) if url_item else None
+        if not rec: return
+        menu = QMenu(self)
+        menu.addAction("Send to Repeater", lambda: (self.prepare_repeater(rec.method, rec.url, self.request_text(rec)), self.show_page("REPEATER")))
+        menu.addAction("Send to Intruder", lambda: (self.intruder_request.setPlainText(self.request_text(rec)), self.show_page("INTRUDER")))
+        menu.addAction("Add host to scope", lambda: self._add_record_host_to_scope(rec))
+        menu.addAction("Copy URL", lambda: QApplication.clipboard().setText(rec.url))
+        menu.exec(QCursor.pos())
+
+    def _add_record_host_to_scope(self, rec: CapturedTransaction):
+        sp = urllib.parse.urlsplit(rec.url)
+        if sp.netloc:
+            self.scope_input.setText(f"{sp.scheme}://{sp.netloc}")
+            self.add_scope()
+            self.log_event(f"Added host to scope from history: {sp.netloc}")
 
     def show_proxy_selection(self):
         self.show_record_at_row(self.proxy_table.currentRow())
@@ -681,26 +868,13 @@ class MainWindow(QMainWindow):
         rec = self.selected_record()
         if not rec: return
         self.intruder_request.setPlainText(self.request_text(rec))
+        params = urllib.parse.parse_qsl(urllib.parse.urlsplit(rec.url).query, keep_blank_values=True)
+        if params and not self.intruder_parameter.text().strip():
+            self.intruder_parameter.setText(params[0][0])
         self.log_event(f"Loaded request into Intruder: {rec.method} {rec.url}")
 
     def parse_request(self, text: str, fallback_url: str = "") -> tuple[str, str, dict[str, str], str]:
-        text = text.replace("\r\n", "\n").replace("\r", "\n")
-        head, body = (text.split("\n\n", 1) + [""])[:2] if "\n\n" in text else (text, "")
-        lines = head.splitlines()
-        if not lines: raise ValueError("Empty request")
-        first = lines[0].split();
-        if len(first) < 2: raise ValueError("Invalid request line")
-        method, path = first[0].upper(), first[1]
-        headers = {}
-        for line in lines[1:]:
-            if ":" in line:
-                k, v = line.split(":", 1); headers[k.strip()] = v.strip()
-        host = next((v for k,v in headers.items() if k.lower() == "host"), "")
-        if path.startswith("http://") or path.startswith("https://"): url = path
-        elif host:
-            base = urllib.parse.urlsplit(fallback_url or "https://{host}")
-            url = f"{base.scheme or 'https'}://{host}" + (path if path.startswith("/") else "/" + path)
-        else: raise ValueError("No Host header / absolute URL")
+        method, url, headers, body, _version = parse_http_request_core(text, fallback_url)
         return method, url, headers, body
 
     def start_intruder(self):
@@ -722,7 +896,7 @@ class MainWindow(QMainWindow):
     # --------------------------------------------------------------- repeater
     def page_repeater(self) -> QWidget:
         w, l = self.page_frame("Repeater", "Manual HTTP request editor and replay")
-        toolbar = self.card(1128, 60); tl = QHBoxLayout(toolbar); tl.setContentsMargins(12, 10, 12, 10); self.rep_method = QComboBox(); self.rep_method.addItems(["GET","POST","PUT","PATCH","DELETE","HEAD","OPTIONS"]); self.rep_method.setFixedWidth(100); tl.addWidget(self.rep_method); self.rep_target = QLineEdit(); self.rep_target.setPlaceholderText("https://target.example/path"); tl.addWidget(self.rep_target); self.rep_protocol = QComboBox(); self.rep_protocol.addItems(["AUTO","HTTP/1.1","HTTP/2"]); self.rep_protocol.setFixedWidth(110); tl.addWidget(self.rep_protocol); send = QPushButton("Send"); send.setObjectName("primary"); send.clicked.connect(self.send_repeater); tl.addWidget(send); cancel = QPushButton("Cancel"); cancel.setObjectName("danger"); cancel.clicked.connect(self.cancel_repeater); tl.addWidget(cancel); save = QPushButton("Save"); save.clicked.connect(self.save_current_repeater); tl.addWidget(save); add_spacer(tl); self.rep_status = label("—", 11, GOLD2, True); tl.addWidget(self.rep_status); l.addWidget(toolbar)
+        toolbar = self.card(1128, 60); tl = QHBoxLayout(toolbar); tl.setContentsMargins(12, 10, 12, 10); self.rep_method = QComboBox(); self.rep_method.addItems(["GET","POST","PUT","PATCH","DELETE","HEAD","OPTIONS"]); self.rep_method.setFixedWidth(100); tl.addWidget(self.rep_method); self.rep_target = QLineEdit(); self.rep_target.setPlaceholderText("https://target.example/path"); tl.addWidget(self.rep_target); self.rep_protocol = QComboBox(); self.rep_protocol.addItems(["AUTO","HTTP/1.1","HTTP/2"]); self.rep_protocol.setFixedWidth(110); tl.addWidget(self.rep_protocol); send = QPushButton("Send"); send.setObjectName("primary"); send.clicked.connect(self.send_repeater); tl.addWidget(send); cancel = QPushButton("Cancel"); cancel.setObjectName("danger"); cancel.clicked.connect(self.cancel_repeater); tl.addWidget(cancel); save = QPushButton("Save"); save.clicked.connect(self.save_current_repeater); tl.addWidget(save); poc = QPushButton("CSRF PoC"); poc.clicked.connect(self.generate_csrf_poc); tl.addWidget(poc); add_spacer(tl); self.rep_status = label("—", 11, GOLD2, True); tl.addWidget(self.rep_status); l.addWidget(toolbar)
         split = QSplitter(Qt.Horizontal); split.setFixedHeight(700)
         left = self.card(560, 700); lv = QVBoxLayout(left); lv.setContentsMargins(12, 12, 12, 12); lv.addWidget(label("Request", 12, TEXT, True)); self.rep_request = QPlainTextEdit(); self.rep_request.setPlainText("GET / HTTP/1.1\nHost: example.com\n\n"); lv.addWidget(self.rep_request); split.addWidget(left)
         right = self.card(560, 700); rv = QVBoxLayout(right); rv.setContentsMargins(12, 12, 12, 12); rv.addWidget(label("Response", 12, TEXT, True)); self.rep_response = QPlainTextEdit(); self.rep_response.setReadOnly(True); rv.addWidget(self.rep_response); split.addWidget(right); split.setSizes([560,560]); l.addWidget(split); return w
@@ -771,7 +945,7 @@ class MainWindow(QMainWindow):
     # ---------------------------------------------------------------- decoder
     def page_decoder(self) -> QWidget:
         w, l = self.page_frame("Decoder", "Encode / decode helpers for request analysis")
-        c = self.card(1128, 690); cv = QVBoxLayout(c); row=QHBoxLayout(); self.dec_mode=QComboBox(); self.dec_mode.addItems(["Base64","URL","Hex","HTML","JWT"]); row.addWidget(self.dec_mode,0); enc=QPushButton("Encode"); enc.clicked.connect(self.decode_run_encode); row.addWidget(enc); dec=QPushButton("Decode"); dec.setObjectName("primary"); dec.clicked.connect(self.decode_run_decode); row.addWidget(dec); add_spacer(row); cv.addLayout(row); io=QSplitter(Qt.Horizontal); self.dec_in=QPlainTextEdit(); self.dec_out=QPlainTextEdit(); self.dec_out.setReadOnly(False); io.addWidget(self.dec_in); io.addWidget(self.dec_out); cv.addWidget(io); l.addWidget(c); return w
+        c = self.card(1128, 690); cv = QVBoxLayout(c); row=QHBoxLayout(); self.dec_mode=QComboBox(); self.dec_mode.addItems(["Base64","URL","Hex","HTML","JWT","SHA256","SHA1","MD5","SHA512"]); row.addWidget(self.dec_mode,0); enc=QPushButton("Encode"); enc.clicked.connect(self.decode_run_encode); row.addWidget(enc); dec=QPushButton("Decode"); dec.setObjectName("primary"); dec.clicked.connect(self.decode_run_decode); row.addWidget(dec); add_spacer(row); cv.addLayout(row); io=QSplitter(Qt.Horizontal); self.dec_in=QPlainTextEdit(); self.dec_out=QPlainTextEdit(); self.dec_out.setReadOnly(False); io.addWidget(self.dec_in); io.addWidget(self.dec_out); cv.addWidget(io); l.addWidget(c); return w
 
     def decode_run_encode(self): self.decode_transform(True)
     def decode_run_decode(self): self.decode_transform(False)
@@ -782,6 +956,9 @@ class MainWindow(QMainWindow):
             elif mode=="URL": out=urllib.parse.quote(data,safe="") if encode else urllib.parse.unquote(data)
             elif mode=="Hex": out=data.encode().hex() if encode else bytes.fromhex(data.strip()).decode(errors="replace")
             elif mode=="HTML": out=html.escape(data) if encode else html.unescape(data)
+            elif mode in {"SHA256","SHA1","MD5","SHA512"}:
+                if not encode: out=hash_text(data, mode)
+                else: raise ValueError("Hash functions are one-way; use Decode to calculate a digest")
             else: out=self.jwt_transform(data, encode)
             self.dec_out.setPlainText(out); self.log_event(f"Decoder {mode} {'encode' if encode else 'decode'}")
         except Exception as exc: self.dec_out.setPlainText("ERROR: "+str(exc))
@@ -789,11 +966,18 @@ class MainWindow(QMainWindow):
     @staticmethod
     def jwt_transform(data: str, encode: bool) -> str:
         if encode:
-            parts=data.split("."); header=json.loads(base64.urlsafe_b64decode(parts[0]+"="*((4-len(parts[0])%4)%4))); payload=json.loads(base64.urlsafe_b64decode(parts[1]+"="*((4-len(parts[1])%4)%4))); return json.dumps({"header":header,"payload":payload,"signature":parts[2] if len(parts)>2 else ""}, indent=2)
-        parts=data.split(".");
-        if len(parts)<2: raise ValueError("Not a JWT")
-        def load(p): return json.loads(base64.urlsafe_b64decode(p+"="*((4-len(p)%4)%4)).decode())
-        return json.dumps({"header":load(parts[0]),"payload":load(parts[1]),"signature":parts[2] if len(parts)>2 else ""}, indent=2)
+            obj = json.loads(data)
+            header = obj.get("header") if isinstance(obj, dict) else None
+            payload = obj.get("payload") if isinstance(obj, dict) else None
+            signature = obj.get("signature", "") if isinstance(obj, dict) else ""
+            if not isinstance(header, dict) or not isinstance(payload, dict):
+                raise ValueError("Encode expects JSON with object fields: header, payload, signature")
+            def enc(part):
+                raw = json.dumps(part, separators=(",", ":"), ensure_ascii=False).encode()
+                return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+            return f"{enc(header)}.{enc(payload)}.{signature}"
+        obj = decode_jwt(data)
+        return json.dumps(obj, indent=2, ensure_ascii=False)
 
     # ---------------------------------------------------------------- comparer
     def page_comparer(self) -> QWidget:
@@ -884,7 +1068,7 @@ class MainWindow(QMainWindow):
     # ---------------------------------------------------------------- discover
     def page_discover(self) -> QWidget:
         w,l=self.page_frame("Discover","CTF-oriented passive + controlled web analysis")
-        c=self.card(1128,690); cv=QVBoxLayout(c); nav=QHBoxLayout(); self.discover_mode=QComboBox(); self.discover_mode.addItems(["Overview","Site map","Forms","Technologies","Secrets","JWT","Payload catalog"]); nav.addWidget(self.discover_mode); show=QPushButton("Refresh from latest analysis"); show.setObjectName("primary"); show.clicked.connect(self.refresh_discover); nav.addWidget(show); add_spacer(nav); cv.addLayout(nav); self.discover_output=QPlainTextEdit(); self.discover_output.setReadOnly(True); cv.addWidget(self.discover_output); self.discover_mode.currentTextChanged.connect(self.refresh_discover); l.addWidget(c); return w
+        c=self.card(1128,690); cv=QVBoxLayout(c); nav=QHBoxLayout(); self.discover_mode=QComboBox(); self.discover_mode.addItems(["Overview","Site map","Forms","Technologies","Secrets","JWT","Findings","Payload catalog"]); nav.addWidget(self.discover_mode); show=QPushButton("Refresh from latest analysis"); show.setObjectName("primary"); show.clicked.connect(self.refresh_discover); nav.addWidget(show); add_spacer(nav); cv.addLayout(nav); self.discover_output=QPlainTextEdit(); self.discover_output.setReadOnly(True); cv.addWidget(self.discover_output); self.discover_mode.currentTextChanged.connect(self.refresh_discover); l.addWidget(c); return w
 
     def refresh_discover(self):
         r=self.current_result
@@ -893,12 +1077,72 @@ class MainWindow(QMainWindow):
             if mode=="Payload catalog": self.discover_output.setPlainText(json.dumps({k:v["payloads"] for k,v in PAYLOAD_CATALOG.items()},indent=2))
             else: self.discover_output.setPlainText("No analysis result yet. Run Target → Analyze target.")
             return
-        data={"Overview":{"target":r.target,"requests":len(r.requests),"site_map":len(r.site_map),"forms":len(r.forms),"js_files":len(r.js_files),"technologies":r.technologies,"secrets":r.secrets,"jwt":len(r.jwt_tokens)},"Site map":r.site_map,"Forms":r.forms,"Technologies":r.technologies,"Secrets":r.secrets,"JWT":[asdict(x) for x in r.jwt_tokens],"Payload catalog":{k:v["payloads"] for k,v in PAYLOAD_CATALOG.items()}}.get(mode)
+        findings = []
+        for item in r.payload_runs:
+            findings.append({"state": item.state, "family": item.family, "parameter": item.parameter, "payload": item.payload, "status": item.status, "diff": item.diff_summary, "evidence": item.evidence, "source_urls": item.source_urls})
+        data={"Overview":{"target":r.target,"requests":len(r.requests),"site_map":len(r.site_map),"forms":len(r.forms),"js_files":len(r.js_files),"technologies":r.technologies,"secrets":r.secrets,"jwt":len(r.jwt_tokens),"findings":len(r.payload_runs)},"Site map":r.site_map,"Forms":r.forms,"Technologies":r.technologies,"Secrets":r.secrets,"JWT":[asdict(x) for x in r.jwt_tokens],"Findings":findings,"Payload catalog":{k:v["payloads"] for k,v in PAYLOAD_CATALOG.items()}}.get(mode)
         self.discover_output.setPlainText(json.dumps(data,indent=2,ensure_ascii=False))
+
+    # -------------------------------------------------------------- project I/O
+    def project_menu(self):
+        menu = QMenu(self)
+        menu.addAction("Save project…", self.save_project_dialog)
+        menu.addAction("Load project…", self.load_project_dialog)
+        menu.addSeparator()
+        menu.addAction("Extensions", lambda: self.show_page("EXTENSIONS"))
+        menu.exec(QCursor.pos())
+
+    def save_project_dialog(self):
+        path, _ = QFileDialog.getSaveFileName(self, "Save KCONK project", "kconk_project.json", "KCONK Project (*.json)")
+        if not path: return
+        data = []
+        for rec in self.records:
+            data.append(asdict(rec))
+        export_project(path, scopes=[r.pattern for r in self.scope_rules], saved_requests=self.saved_requests, events=self.events, records=data)
+        self.log_event(f"Project saved: {path}")
+
+    def load_project_dialog(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Load KCONK project", "", "KCONK Project (*.json)")
+        if not path: return
+        try:
+            payload = import_project(path)
+            self.scope_rules = [ScopeRule(x, True) for x in payload.get("scopes", [])]
+            self.saved_requests = list(payload.get("saved_requests", []))
+            self.events = list(payload.get("events", []))
+            self.records.clear(); self.record_by_request.clear(); self.proxy_table.setRowCount(0); self.dashboard_table.setRowCount(0)
+            for data in payload.get("records", []):
+                rec = CapturedTransaction(**{k: data.get(k) for k in CapturedTransaction.__dataclass_fields__.keys()})
+                self.records.append(rec); self.record_by_request[rec.request_id] = rec; self.fill_traffic_row(rec)
+            self.refresh_organizer(); self.refresh_traffic_filters()
+            if hasattr(self, "logger_table"):
+                self.logger_table.setRowCount(0)
+                for line in reversed(self.events):
+                    parts = line.split("] ", 1); stamp = parts[0].lstrip("[") if len(parts) == 2 else ""; event = parts[1] if len(parts) == 2 else line
+                    row = self.logger_table.rowCount(); self.logger_table.insertRow(row); self.logger_table.setItem(row, 0, QTableWidgetItem(stamp)); self.logger_table.setItem(row, 1, QTableWidgetItem(event))
+            self.log_event(f"Project loaded: {path}")
+        except Exception as exc:
+            QMessageBox.warning(self, "Project", str(exc))
+
+    def generate_csrf_poc(self):
+        try:
+            method, url, headers, body = self.parse_request(self.rep_request.toPlainText(), self.rep_target.text().strip())
+        except Exception as exc:
+            QMessageBox.warning(self, "CSRF PoC", str(exc)); return
+        sp = urllib.parse.urlsplit(url); fields = urllib.parse.parse_qsl(body, keep_blank_values=True) if body else []
+        lines = ["<!doctype html>", "<html><body>", f'<form action="{html.escape(url, quote=True)}" method="{method}">']
+        if fields:
+            for key, value in fields:
+                lines.append(f'<input type="hidden" name="{html.escape(key, quote=True)}" value="{html.escape(value, quote=True)}">')
+        lines += ['<input type="submit" value="Submit">', "</form>", "</body></html>"]
+        self.dec_mode.setCurrentText("HTML") if hasattr(self, "dec_mode") else None
+        self.show_page("DECODER")
+        self.dec_in.setPlainText("\n".join(lines))
+        self.log_event(f"Generated CSRF PoC for {method} {sp.netloc}{sp.path}")
 
     # ---------------------------------------------------------------- misc
     def closeEvent(self, event):
         self.stop_capture(False)
+        self.stop_proxy_listener()
         for worker in (self.analysis_worker,self.repeater_worker,self.intruder_worker):
             if worker and worker.isRunning():
                 try: worker.terminate(); worker.wait(500)
