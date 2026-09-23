@@ -16,6 +16,8 @@ from urllib.request import urlopen
 import websocket
 from PySide6.QtCore import QThread, Signal
 
+from core.scope import is_in_scope
+
 
 @dataclass
 class InterceptedRequest:
@@ -69,9 +71,23 @@ class ChromeCaptureThread(QThread):
         self._command_queues: dict[str, queue.Queue] = {}
         self._intercept_enabled = False
         self._state_lock = threading.RLock()
+        self._scope = ""
 
     def stop(self):
         self._stop.set()
+
+    def set_scope(self, scope: str):
+        normalized = scope.strip()
+        with self._state_lock:
+            self._scope = normalized
+            queues = list(self._command_queues.values())
+        for q in queues:
+            q.put(("scope", normalized))
+
+    def _url_in_scope(self, url: str) -> bool:
+        with self._state_lock:
+            scope = self._scope
+        return is_in_scope(url, scope)
 
     def set_intercept(self, enabled: bool):
         """Toggle CDP Fetch interception for all attached browser tabs."""
@@ -104,6 +120,7 @@ class ChromeCaptureThread(QThread):
         records: dict[str, CapturedTransaction] = {}
         pending_body: dict[int, str] = {}
         paused_request_ids: set[str] = set()
+        paused_request_urls: dict[str, str] = {}
         extra_request_headers: dict[str, dict[str, str]] = {}
         extra_response_headers: dict[str, dict[str, str]] = {}
         counter = itertools.count(100)
@@ -151,7 +168,19 @@ class ChromeCaptureThread(QThread):
                     except queue.Empty:
                         break
                     kind, value = command
-                    if kind == "fetch_toggle":
+                    if kind == "scope":
+                        with self._state_lock:
+                            self._scope = str(value or "").strip()
+                        for paused_id, paused_url in list(paused_request_urls.items()):
+                            if not self._url_in_scope(paused_url):
+                                ws.send(json.dumps({
+                                    "id": next(counter),
+                                    "method": "Fetch.continueRequest",
+                                    "params": {"requestId": paused_id},
+                                }))
+                                paused_request_ids.discard(paused_id)
+                                paused_request_urls.pop(paused_id, None)
+                    elif kind == "fetch_toggle":
                         if value:
                             ws.send(json.dumps({
                                 "id": next(counter),
@@ -168,13 +197,16 @@ class ChromeCaptureThread(QThread):
                                     "params": {"requestId": paused_id},
                                 }))
                             paused_request_ids.clear()
+                            paused_request_urls.clear()
                             ws.send(json.dumps({"id": next(counter), "method": "Fetch.disable"}))
                     elif kind == "forward":
                         ws.send(json.dumps({"id": next(counter), "method": "Fetch.continueRequest", "params": {"requestId": value}}))
                         paused_request_ids.discard(value)
+                        paused_request_urls.pop(value, None)
                     elif kind == "drop":
                         ws.send(json.dumps({"id": next(counter), "method": "Fetch.failRequest", "params": {"requestId": value, "errorReason": "BlockedByClient"}}))
                         paused_request_ids.discard(value)
+                        paused_request_urls.pop(value, None)
                 try:
                     raw = ws.recv()
                     if not raw:
@@ -200,7 +232,8 @@ class ChromeCaptureThread(QThread):
                                 except Exception:
                                     pass
                             record.response_body = body
-                            self.updated.emit(record)
+                            if self._url_in_scope(record.url):
+                                self.updated.emit(record)
                     continue
 
                 method = msg.get("method", "")
@@ -219,7 +252,15 @@ class ChromeCaptureThread(QThread):
                         body=str(request.get("postData", "") or ""),
                         resource_type=str(p.get("resourceType", "Other") or "Other"),
                     )
+                    if not self._url_in_scope(paused.url):
+                        ws.send(json.dumps({
+                            "id": next(counter),
+                            "method": "Fetch.continueRequest",
+                            "params": {"requestId": paused.paused_request_id},
+                        }))
+                        continue
                     paused_request_ids.add(paused.paused_request_id)
+                    paused_request_urls[paused.paused_request_id] = paused.url
                     self.intercepted.emit(paused)
                     continue
 
@@ -239,6 +280,8 @@ class ChromeCaptureThread(QThread):
                     merged_extra = extra_request_headers.pop(request_id, {})
                     if merged_extra:
                         record.request_headers.update(merged_extra)
+                    if not self._url_in_scope(record.url):
+                        continue
                     records[request_id] = record
                     self.transaction.emit(record)
 
@@ -248,7 +291,8 @@ class ChromeCaptureThread(QThread):
                     record = records.get(request_id)
                     if record:
                         record.request_headers.update(normalized)
-                        self.updated.emit(record)
+                        if self._url_in_scope(record.url):
+                            self.updated.emit(record)
                     else:
                         extra_request_headers[request_id] = normalized
 
@@ -264,7 +308,8 @@ class ChromeCaptureThread(QThread):
                     if merged_extra:
                         record.response_headers.update(merged_extra)
                     record.mime_type = resp.get("mimeType", "") or ""
-                    self.updated.emit(record)
+                    if self._url_in_scope(record.url):
+                        self.updated.emit(record)
 
                 elif method == "Network.responseReceivedExtraInfo":
                     headers = p.get("headers") or {}
@@ -272,7 +317,8 @@ class ChromeCaptureThread(QThread):
                     record = records.get(request_id)
                     if record:
                         record.response_headers.update(normalized)
-                        self.updated.emit(record)
+                        if self._url_in_scope(record.url):
+                            self.updated.emit(record)
                     else:
                         extra_response_headers[request_id] = normalized
 
@@ -293,14 +339,16 @@ class ChromeCaptureThread(QThread):
                             "method": "Network.getResponseBody",
                             "params": {"requestId": request_id},
                         }))
-                    self.updated.emit(record)
+                    if self._url_in_scope(record.url):
+                        self.updated.emit(record)
 
                 elif method == "Network.loadingFailed":
                     record = records.get(request_id)
                     if not record:
                         continue
                     record.failed = p.get("errorText", "Request failed") or "Request failed"
-                    self.updated.emit(record)
+                    if self._url_in_scope(record.url):
+                        self.updated.emit(record)
         finally:
             try:
                 if ws:

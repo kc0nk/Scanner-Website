@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QVBoxLayout,
     QComboBox,
+    QLineEdit,
     QListView,
     QMenu,
     QPlainTextEdit,
@@ -29,6 +30,7 @@ from PySide6.QtWidgets import (
 
 from app.version import __version__
 from core.chrome_capture import ChromeCaptureThread, launch_chrome
+from core.scope import is_in_scope, normalize_scope
 
 ROOT = Path(__file__).resolve().parents[1]
 LOGO = ROOT / "assets" / "kconk_logo.png"
@@ -142,6 +144,8 @@ QPushButton#proxySubItem:hover {{ background: {NAV_BG_ACTIVE}; color: {TEXT}; }}
 QPushButton#proxySubActive {{ color: {GOLD_BRIGHT}; border-bottom: 2px solid {GOLD_BRIGHT}; background: {NAV_BG_ACTIVE}; }}
 QPushButton#proxyAction {{ background: {NAV_BG}; color: {TEXT}; border: 1px solid {LINE}; border-radius: 7px; padding: 0 14px; }}
 QPushButton#proxyAction:hover {{ background: {NAV_BG_ACTIVE}; color: {GOLD_BRIGHT}; border-color: {GOLD}; }}
+QLineEdit#proxyScopeEdit {{ background: {BG}; color: {TEXT}; border: 1px solid {LINE}; border-radius: 7px; padding: 0 10px; }}
+QLineEdit#proxyScopeEdit:focus {{ border-color: {GOLD}; }}
 QTableWidget#proxyTable {{ background: #06110d; color: {TEXT}; border: 0; gridline-color: {LINE}; selection-background-color: {NAV_BG_ACTIVE}; }}
 QTableWidget#proxyTable QHeaderView::section {{ background: {NAV_BG_ACTIVE}; color: {TEXT_DIM}; border: 0; padding: 7px; font-size: 10px; font-weight: 700; }}
 QPushButton#navItem {{
@@ -327,6 +331,7 @@ class MainWindow(QMainWindow):
         self.proxy_intercept_enabled = False
         self.proxy_intercepted = {}
         self.proxy_intercept_selected = None
+        self.proxy_scope = ""
 
         viewport = QScrollArea()
         viewport.setWidgetResizable(False)
@@ -396,6 +401,33 @@ class MainWindow(QMainWindow):
         line.setFixedHeight(1)
         outer.addWidget(line)
 
+        scope_bar = QFrame()
+        scope_bar.setObjectName("proxyPanel")
+        scope_bar.setFixedHeight(58)
+        sl = QHBoxLayout(scope_bar)
+        sl.setContentsMargins(18, 8, 18, 8)
+        sl.setSpacing(8)
+        scope_title = QLabel("SCOPE")
+        scope_title.setStyleSheet(f"font-size:10px;font-weight:800;color:{TEXT_DIM};")
+        sl.addWidget(scope_title)
+        scope_edit = QLineEdit()
+        scope_edit.setPlaceholderText("https://target.example")
+        scope_edit.setText(self.proxy_scope)
+        scope_edit.setObjectName("proxyScopeEdit")
+        scope_edit.setFixedHeight(34)
+        self.proxy_scope_edit = scope_edit
+        sl.addWidget(scope_edit, 1)
+        apply_btn = QPushButton("APPLY")
+        apply_btn.setObjectName("proxyAction")
+        apply_btn.setFixedSize(76, 34)
+        apply_btn.clicked.connect(self.apply_proxy_scope)
+        sl.addWidget(apply_btn)
+        self.proxy_scope_status = QLabel("NO SCOPE")
+        self.proxy_scope_status.setMinimumWidth(110)
+        self.proxy_scope_status.setAlignment(Qt.AlignCenter)
+        sl.addWidget(self.proxy_scope_status)
+        outer.addWidget(scope_bar)
+
         self.proxy_content = QStackedWidget()
         self.proxy_content.setObjectName("proxyContent")
         self.proxy_content.addWidget(self.build_proxy_intercept())
@@ -403,6 +435,38 @@ class MainWindow(QMainWindow):
         outer.addWidget(self.proxy_content)
         self.proxy_subtab = "INTERCEPT"
         return page
+
+    def apply_proxy_scope(self) -> None:
+        raw = self.proxy_scope_edit.text().strip() if hasattr(self, "proxy_scope_edit") else ""
+        normalized = normalize_scope(raw)
+        if raw and not normalized:
+            self.proxy_scope_status.setText("INVALID SCOPE")
+            self.proxy_scope_status.setStyleSheet("font-size:10px;font-weight:800;color:#d96b6b;")
+            return
+        self.proxy_scope = normalized
+        if hasattr(self, "proxy_scope_edit"):
+            self.proxy_scope_edit.setText(normalized)
+        if normalized:
+            self.proxy_scope_status.setText("IN SCOPE")
+            self.proxy_scope_status.setStyleSheet(f"font-size:10px;font-weight:800;color:{GREEN};")
+        else:
+            self.proxy_scope_status.setText("NO SCOPE")
+            self.proxy_scope_status.setStyleSheet(f"font-size:10px;font-weight:800;color:{TEXT_DIM};")
+        capture = getattr(self, "chrome_capture", None)
+        if capture is not None and capture.isRunning():
+            capture.set_scope(normalized)
+        # A scope change starts a clean capture view; stale traffic must never
+        # appear to belong to the new target.
+        self.proxy_records.clear()
+        if hasattr(self, "proxy_history_table"):
+            self.proxy_history_table.setRowCount(0)
+        self.proxy_intercepted.clear()
+        if hasattr(self, "proxy_intercept_table"):
+            self.proxy_intercept_table.setRowCount(0)
+        self.proxy_intercept_selected = None
+
+    def _is_in_scope(self, url: str) -> bool:
+        return is_in_scope(url, self.proxy_scope)
 
     def build_proxy_intercept(self) -> QFrame:
         page = QFrame()
@@ -514,6 +578,8 @@ class MainWindow(QMainWindow):
         return "\n".join(lines)
 
     def on_proxy_intercepted(self, req) -> None:
+        if not self._is_in_scope(req.url):
+            return
         self.proxy_intercepted[req.paused_request_id] = req
         table = getattr(self, "proxy_intercept_table", None)
         if table is None:
@@ -682,6 +748,7 @@ class MainWindow(QMainWindow):
             self.chrome_capture.updated.connect(self.on_proxy_transaction_updated)
             self.chrome_capture.error.connect(self.on_proxy_capture_error)
             self.chrome_capture.state.connect(self.on_proxy_capture_state)
+            self.chrome_capture.set_scope(self.proxy_scope)
             self.chrome_capture.start()
             if self.proxy_intercept_enabled:
                 # Apply the requested intercept mode as soon as the capture thread
@@ -702,13 +769,13 @@ class MainWindow(QMainWindow):
         return bool(url) and (url.startswith("http://") or url.startswith("https://"))
 
     def on_proxy_transaction(self, record) -> None:
-        if not self._is_browser_url(record.url):
+        if not self._is_browser_url(record.url) or not self._is_in_scope(record.url):
             return
         self.proxy_records[record.request_id] = record
         self._insert_proxy_history_row(record)
 
     def on_proxy_transaction_updated(self, record) -> None:
-        if not self._is_browser_url(record.url):
+        if not self._is_browser_url(record.url) or not self._is_in_scope(record.url):
             return
         self.proxy_records[record.request_id] = record
         table = getattr(self, "proxy_history_table", None)
@@ -1048,6 +1115,7 @@ QWidget#navBrand, QWidget#navRail {{ background: transparent; }}
 QFrame#dashboardPage, QFrame#proxyPage, QFrame#proxyWorkspace, QFrame#proxyContent {{ background: {BG}; border: 0; }}
 QFrame#projectCard, QFrame#proxyPanel {{ background: {card_bg}; border: 1px solid {card_line}; border-radius: 10px; }}
 QFrame#cardDivider {{ background: {LINE}; border: 0; }}
+QLineEdit#proxyScopeEdit {{ background: {table_bg}; color: {TEXT}; border: 1px solid {LINE}; border-radius: 7px; padding: 0 10px; }}
 QPushButton#navItem, QPushButton#navItemActive {{ background: transparent; border: 0; border-bottom: 2px solid transparent; color: {TEXT_DIM}; padding: 0 4px; font-size: 11px; font-weight: 700; }}
 QPushButton#navItem:hover {{ background: {NAV_BG_ACTIVE}; color: {TEXT}; }}
 QPushButton#navItemActive {{ background: {NAV_BG_ACTIVE}; border-bottom-color: {GOLD_BRIGHT}; color: {GOLD_BRIGHT}; font-weight: 800; }}
@@ -1058,6 +1126,8 @@ QPushButton#proxySubItem:hover {{ background: {NAV_BG_ACTIVE}; color: {TEXT}; }}
 QPushButton#proxySubActive {{ color: {GOLD_BRIGHT}; border-bottom-color: {GOLD_BRIGHT}; background: {NAV_BG_ACTIVE}; }}
 QPushButton#proxyAction {{ background: {NAV_BG}; color: {TEXT}; border: 1px solid {LINE}; border-radius: 7px; padding: 0 14px; }}
 QPushButton#proxyAction:hover {{ background: {NAV_BG_ACTIVE}; color: {GOLD_BRIGHT}; border-color: {GOLD}; }}
+QLineEdit#proxyScopeEdit {{ background: {table_bg}; color: {TEXT}; border: 1px solid {LINE}; border-radius: 7px; padding: 0 10px; }}
+QLineEdit#proxyScopeEdit:focus {{ border-color: {GOLD}; }}
 QTableWidget#proxyTable {{ background: {table_bg}; color: {TEXT}; border: 0; gridline-color: {LINE}; selection-background-color: {NAV_BG_ACTIVE}; }}
 QTableWidget#proxyTable QHeaderView::section {{ background: {NAV_BG_ACTIVE}; color: {TEXT_DIM}; border: 0; padding: 7px; font-size: 10px; font-weight: 700; }}
 QPlainTextEdit {{ background: {table_bg}; color: {TEXT}; border: 1px solid {LINE}; }}

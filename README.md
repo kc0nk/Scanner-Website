@@ -1,4 +1,4 @@
-# KCONK Suite v27 — Proxy Intercept
+# KCONK Suite v28 — Single Scope + Proxy Intercept
 
 UI and proxy interception workflow for authorized web-security testing.
 
@@ -15,5 +15,9 @@ UI and proxy interception workflow for authorized web-security testing.
 9. Turn **Intercept OFF** to release any currently paused requests and return to normal flow.
 
 ## Scope
+
+KCONK uses exactly one active scope for Proxy. Set it under **PROXY → SCOPE** and click **APPLY**. The scope is normalized to one HTTP/HTTPS origin; every path under that origin is in scope.
+
+Out-of-scope browser traffic continues normally but is not added to Intercept or HTTP History. `chrome://`, `data:`, and other non-HTTP(S) URLs are ignored.
 
 The implementation is intended for authorized testing and local lab environments. HTTPS traffic is observed through Chrome DevTools Protocol; this release does not implement a custom TLS CA MITM.
