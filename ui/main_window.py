@@ -59,12 +59,13 @@ LOGO = ROOT / "assets" / "kconk_logo.png"
 EXTENSIONS = ROOT / "extensions"
 
 # Fixed reference canvas. Window resize never changes the geometry inside it.
-DESIGN_WIDTH = 1500
-DESIGN_HEIGHT = 920
-TOPBAR_HEIGHT = 76
-STATUS_HEIGHT = 38
+DESIGN_WIDTH = 1366
+# Reference canvas matches a 1366x736 desktop screenshot after the WM title bar.
+DESIGN_HEIGHT = 704
+TOPBAR_HEIGHT = 50
+STATUS_HEIGHT = 34
 BODY_HEIGHT = DESIGN_HEIGHT - TOPBAR_HEIGHT - STATUS_HEIGHT
-SIDEBAR_WIDTH = 330
+SIDEBAR_WIDTH = 402
 CONTENT_WIDTH = DESIGN_WIDTH - SIDEBAR_WIDTH
 
 BG = "#06110d"
@@ -108,9 +109,9 @@ QPushButton#danger {{ background:#341b18; color:#f0b1a6; border-color:#66352e; }
 QPushButton#nav {{ text-align:left; background:transparent; border:1px solid transparent; padding:10px 12px; color:{TEXT2}; }}
 QPushButton#nav:hover {{ background:#102a1e; color:{TEXT}; }}
 QPushButton#navActive {{ text-align:left; background:#17372a; border:1px solid #3b5d49; padding:10px 12px; color:{GOLD2}; }}
-QPushButton#topnav {{ background:transparent; border:0; border-bottom:2px solid transparent; border-radius:0; padding:14px 8px 12px; color:#9fa696; font-size:10px; }}
+QPushButton#topnav {{ background:transparent; border:0; border-bottom:2px solid transparent; border-radius:0; padding:14px 8px 12px; color:#9fa696; font-size:9px; }}
 QPushButton#topnav:hover {{ color:{TEXT}; }}
-QPushButton#topnavActive {{ background:transparent; border:0; border-bottom:2px solid {GOLD2}; border-radius:0; padding:14px 8px 12px; color:{GOLD2}; font-size:10px; }}
+QPushButton#topnavActive {{ background:transparent; border:0; border-bottom:2px solid {GOLD2}; border-radius:0; padding:14px 8px 12px; color:{GOLD2}; font-size:9px; }}
 QTabBar::tab {{ background:#0b1b14; border:1px solid {LINE}; padding:8px 14px; margin-right:4px; border-radius:7px; color:{TEXT2}; }}
 QTabBar::tab:selected {{ background:#163629; color:{GOLD2}; border-color:#3d604b; }}
 QSplitter::handle {{ background:#193428; }}
@@ -263,12 +264,42 @@ class IntruderWorker(QThread):
 
 
 class MainWindow(QMainWindow):
-    NAV = ["DASHBOARD", "TARGET", "PROXY", "INTRUDER", "REPEATER", "COLLABORATOR", "SEQUENCER", "DECODER", "COMPARER", "LOGGER", "ORGANIZER", "EXTENSIONS", "DISCOVER"]
+    # Public navigation is intentionally compact. The remaining tools stay
+    # available as internal workflow pages so the top bar does not overflow.
+    NAV = [
+        "DASHBOARD",
+        "WORKFLOW",
+        "INTRUDER",
+        "REPEATER",
+        "SCANNING",
+        "COLLABORATOR",
+        "META WORKFLOW NC",
+    ]
+    NAV_TARGETS = {
+        "DASHBOARD": "DASHBOARD",
+        "WORKFLOW": "WORKFLOW",
+        "INTRUDER": "INTRUDER",
+        "REPEATER": "REPEATER",
+        "SCANNING": "TARGET",
+        "COLLABORATOR": "COLLABORATOR",
+        "META WORKFLOW NC": "META WORKFLOW NC",
+    }
+    NAV_ALIASES = {
+        "TARGET": "SCANNING",
+        "PROXY": "WORKFLOW",
+        "SEQUENCER": "META WORKFLOW NC",
+        "DECODER": "META WORKFLOW NC",
+        "COMPARER": "META WORKFLOW NC",
+        "LOGGER": "META WORKFLOW NC",
+        "ORGANIZER": "META WORKFLOW NC",
+        "EXTENSIONS": "META WORKFLOW NC",
+        "DISCOVER": "META WORKFLOW NC",
+    }
 
     def __init__(self):
         super().__init__()
         self.setWindowTitle(f"KCONK Suite v{__version__}")
-        self.resize(1500, 920)
+        self.resize(DESIGN_WIDTH, DESIGN_HEIGHT)
         self.setStyleSheet(STYLE)
 
         self.records: list[CapturedTransaction] = []
@@ -290,7 +321,9 @@ class MainWindow(QMainWindow):
         viewport = QScrollArea()
         viewport.setObjectName("viewport")
         viewport.setWidgetResizable(False)
-        viewport.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        viewport.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
+        viewport.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        viewport.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         canvas = QWidget()
         canvas.setFixedSize(DESIGN_WIDTH, DESIGN_HEIGHT)
         canvas_layout = QVBoxLayout(canvas)
@@ -312,15 +345,18 @@ class MainWindow(QMainWindow):
         canvas_layout.addWidget(self.build_statusbar())
         viewport.setWidget(canvas)
         self.setCentralWidget(viewport)
+        QTimer.singleShot(0, lambda: (viewport.verticalScrollBar().setValue(0), viewport.horizontalScrollBar().setValue(0)))
 
         self.pages = {}
         for name, builder in [
             ("DASHBOARD", self.page_dashboard),
+            ("WORKFLOW", self.page_workflow),
             ("TARGET", self.page_target),
             ("PROXY", self.page_proxy),
             ("INTRUDER", self.page_intruder),
             ("REPEATER", self.page_repeater),
             ("COLLABORATOR", self.page_collaborator),
+            ("META WORKFLOW NC", self.page_meta_workflow_nc),
             ("SEQUENCER", self.page_sequencer),
             ("DECODER", self.page_decoder),
             ("COMPARER", self.page_comparer),
@@ -330,8 +366,16 @@ class MainWindow(QMainWindow):
             ("DISCOVER", self.page_discover),
         ]:
             p = builder()
-            self.pages[name] = p
-            self.stack.addWidget(p)
+            page_scroll = QScrollArea()
+            page_scroll.setWidgetResizable(False)
+            page_scroll.setFrameShape(QFrame.NoFrame)
+            page_scroll.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+            page_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            page_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            page_scroll.setFixedSize(CONTENT_WIDTH, BODY_HEIGHT)
+            page_scroll.setWidget(p)
+            self.pages[name] = page_scroll
+            self.stack.addWidget(page_scroll)
 
         self.active_nav = "DASHBOARD"
         self.update_sidebar("DASHBOARD")
@@ -352,13 +396,14 @@ class MainWindow(QMainWindow):
         brand_box.addWidget(label("KCONK Suite", 17, GOLD2, True))
         brand_box.addWidget(label(f"Community Edition v{__version__}", 9, TEXT2))
         brand.addLayout(brand_box)
-        brand_widget = QWidget(); brand_widget.setFixedWidth(235); brand_widget.setLayout(brand); outer.addWidget(brand_widget)
+        brand_widget = QWidget(); brand_widget.setFixedWidth(205); brand_widget.setLayout(brand); outer.addWidget(brand_widget)
 
-        widths = [78, 62, 57, 74, 76, 103, 86, 73, 78, 61, 78, 85, 75]
+        widths = [92, 105, 92, 92, 100, 120, 162]
         self.top_buttons = {}
         for name, width in zip(self.NAV, widths):
             b = QPushButton(name); b.setObjectName("topnav"); b.setFixedWidth(width)
-            b.clicked.connect(lambda _, n=name: self.show_page(n)); self.top_buttons[name] = b; outer.addWidget(b)
+            b.clicked.connect(lambda _, n=name: self.show_page(self.NAV_TARGETS[n]))
+            self.top_buttons[name] = b; outer.addWidget(b)
         outer.addStretch(1)
         for glyph, handler in [("◉", lambda: self.new_live_capture()), ("☾", lambda: self.log_event("UI theme: dark")), ("⚙", lambda: self.project_menu())]:
             b = QPushButton(glyph); b.setFixedSize(34, 34); b.setStyleSheet(f"QPushButton{{border:0;background:transparent;color:{GOLD2};font-size:17px;}}QPushButton:hover{{background:#10261a;border-radius:8px;}}"); b.clicked.connect(handler); outer.addWidget(b)
@@ -377,16 +422,16 @@ class MainWindow(QMainWindow):
         b2 = QPushButton("New live task"); b2.setObjectName("primary"); b2.setFixedWidth(126); b2.clicked.connect(self.new_live_capture)
         actions.addWidget(b1); actions.addWidget(b2); actions.addStretch(1); l.addLayout(actions)
 
-        self.task_search = QLineEdit(); self.task_search.setPlaceholderText("Search tasks / modules"); self.task_search.setFixedHeight(37); self.task_search.textChanged.connect(self.filter_tasks); l.addWidget(self.task_search)
-        self.task_list = QListWidget(); self.task_list.setFixedHeight(300); self.task_list.itemClicked.connect(self.sidebar_task_clicked)
+        self.task_search = QLineEdit(); self.task_search.setPlaceholderText("Search tasks / modules"); self.task_search.setFixedHeight(34); self.task_search.textChanged.connect(self.filter_tasks); l.addWidget(self.task_search)
+        self.task_list = QListWidget(); self.task_list.setFixedHeight(132); self.task_list.itemClicked.connect(self.sidebar_task_clicked)
         l.addWidget(self.task_list)
 
-        logo_card = QFrame(); logo_card.setObjectName("logopane"); logo_card.setFixedWidth(294)
+        logo_card = QFrame(); logo_card.setObjectName("logopane"); logo_card.setFixedSize(366, 292)
         lv = QVBoxLayout(logo_card); lv.setContentsMargins(14, 12, 14, 14); lv.setSpacing(7)
         lv.addWidget(label("KCONK", 11, GOLD, True), 0, Qt.AlignHCenter)
         logo_view = QLabel(); logo_view.setAlignment(Qt.AlignCenter)
         pix = QPixmap(str(LOGO))
-        if not pix.isNull(): logo_view.setPixmap(pix.scaled(235, 235, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        if not pix.isNull(): logo_view.setPixmap(pix.scaled(188, 188, Qt.KeepAspectRatio, Qt.SmoothTransformation))
         lv.addWidget(logo_view, 1)
         lv.addWidget(label("Security through curiosity", 10, TEXT2, True), 0, Qt.AlignHCenter)
         self.task_hint = label("Capture traffic, inspect it, then move requests into Repeater or Intruder.", 10, MUTED)
@@ -404,7 +449,7 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ common
     def page_frame(self, title: str, subtitle: str = "") -> tuple[QFrame, QVBoxLayout]:
-        wrapper = QFrame(); wrapper.setObjectName("content"); wrapper.setFixedSize(CONTENT_WIDTH, BODY_HEIGHT)
+        wrapper = QFrame(); wrapper.setObjectName("content"); wrapper.setFixedWidth(CONTENT_WIDTH); wrapper.setMinimumHeight(BODY_HEIGHT)
         l = QVBoxLayout(wrapper); l.setContentsMargins(22, 18, 20, 14); l.setSpacing(12)
         head = QHBoxLayout(); head.addWidget(label("◇", 24, GOLD2, True))
         tb = QVBoxLayout(); tb.setSpacing(1); tb.addWidget(label(title, 21, TEXT, True)); tb.addWidget(label(subtitle, 10, MUTED))
@@ -421,8 +466,9 @@ class MainWindow(QMainWindow):
         self.active_nav = name
         self.stack.setCurrentWidget(self.pages[name])
         self.update_sidebar(name)
+        active_button = self.NAV_ALIASES.get(name, name)
         for n, b in self.top_buttons.items():
-            b.setObjectName("topnavActive" if n == name else "topnav")
+            b.setObjectName("topnavActive" if n == active_button else "topnav")
             b.style().unpolish(b); b.style().polish(b)
         self.set_status(f"Module: {name.title()}")
 
@@ -430,6 +476,7 @@ class MainWindow(QMainWindow):
         self.task_list.blockSignals(True); self.task_list.clear()
         task_map = {
             "DASHBOARD": ["Live passive crawl from Proxy", "Recent HTTP history", "Request / response inspector"],
+            "WORKFLOW": ["Capture", "Inspect", "Replay", "Attack", "Scan"],
             "TARGET": ["Scope", "Site map", "Target analysis", "Discovered technologies", "Secrets / JWT"],
             "PROXY": ["Live capture", "HTTP history", "Intercept queue", "Send to Repeater"],
             "INTRUDER": ["Attack setup", "Payload positions", "Results", "Response comparison"],
@@ -442,9 +489,28 @@ class MainWindow(QMainWindow):
             "ORGANIZER": ["Saved requests", "Collections", "Notes"],
             "EXTENSIONS": ["Local extensions", "Load extension", "Extension API"],
             "DISCOVER": ["Crawler", "Forms", "Technologies", "Passive findings", "Payload catalog"],
+            "SCANNING": ["Scope", "Site map", "Target analysis", "Discovered technologies", "Secrets / JWT"],
+            "META WORKFLOW NC": ["Sequencer", "Decoder", "Comparer", "Logger", "Organizer", "Extensions", "Discover"],
         }
         for item in task_map.get(module, []): self.task_list.addItem(QListWidgetItem(item))
-        self.task_hint.setText({"DASHBOARD":"Capture browser traffic and move interesting requests into dedicated tools.","TARGET":"Define scope and build a site map before focused testing.","PROXY":"Use Chromium CDP capture to inspect application traffic.","INTRUDER":"Replay controlled payloads against a selected parameter.","REPEATER":"Edit one HTTP request and send it repeatedly.","COLLABORATOR":"Generate local canaries for correlation workflows.","SEQUENCER":"Evaluate token sample randomness without sending traffic.","DECODER":"Transform encoded values used during request analysis.","COMPARER":"Diff two artifacts side by side.","LOGGER":"Review a unified event history.","ORGANIZER":"Save and reuse request templates.","EXTENSIONS":"Load local Python modules exposing register(app).","DISCOVER":"Run the existing CTF-oriented passive and controlled analyzer."}.get(module,""))
+        self.task_hint.setText({
+            "DASHBOARD":"Capture browser traffic and move interesting requests into dedicated tools.",
+            "WORKFLOW":"Coordinate Capture → Inspect → Replay → Attack → Scan.",
+            "TARGET":"Define scope and build a site map before focused testing.",
+            "SCANNING":"Define scope and build a site map before focused testing.",
+            "PROXY":"Use Chromium CDP capture to inspect application traffic.",
+            "INTRUDER":"Replay controlled payloads against a selected parameter.",
+            "REPEATER":"Edit one HTTP request and send it repeatedly.",
+            "COLLABORATOR":"Generate local canaries for correlation workflows.",
+            "SEQUENCER":"Evaluate token sample randomness without sending traffic.",
+            "DECODER":"Transform encoded values used during request analysis.",
+            "COMPARER":"Diff two artifacts side by side.",
+            "LOGGER":"Review a unified event history.",
+            "ORGANIZER":"Save and reuse request templates.",
+            "EXTENSIONS":"Load local Python modules exposing register(app).",
+            "DISCOVER":"Run the existing CTF-oriented passive and controlled analyzer.",
+            "META WORKFLOW NC":"Open supporting analysis, correlation and utility modules."
+        }.get(module,""))
         self.task_list.blockSignals(False)
 
     def filter_tasks(self, text: str):
@@ -560,21 +626,45 @@ class MainWindow(QMainWindow):
             if row >= 0: self.show_record_at_row(row)
 
     def fill_traffic_row(self, rec: CapturedTransaction):
+        host = urllib.parse.urlsplit(rec.url).netloc or "—"
         for table in (self.proxy_table, self.dashboard_table):
-            row = table.rowCount(); table.insertRow(row)
-            table.setItem(row, 0, QTableWidgetItem(rec.method)); table.setItem(row, 1, QTableWidgetItem(rec.url)); table.setItem(row, 2, QTableWidgetItem(str(rec.status or "—"))); table.setItem(row, 3, QTableWidgetItem(str(rec.response_size))); table.setItem(row, 4, QTableWidgetItem(rec.mime_type or "—")); table.setItem(row, 5, QTableWidgetItem(f"{rec.duration_ms} ms")); table.item(row, 1).setData(Qt.UserRole, rec.request_id)
+            row = table.rowCount()
+            table.insertRow(row)
+            if table.columnCount() == 5:
+                values = [host, rec.method, rec.url, str(rec.status or "—"), rec.mime_type or "—"]
+                for col, value in enumerate(values):
+                    table.setItem(row, col, QTableWidgetItem(str(value)))
+                table.item(row, 2).setData(Qt.UserRole, rec.request_id)
+            else:
+                values = [rec.method, rec.url, str(rec.status or "—"), str(rec.response_size), rec.mime_type or "—", f"{rec.duration_ms} ms"]
+                for col, value in enumerate(values):
+                    table.setItem(row, col, QTableWidgetItem(str(value)))
+                table.item(row, 1).setData(Qt.UserRole, rec.request_id)
 
     def refresh_traffic_row(self, rec: CapturedTransaction):
         for table in (self.proxy_table, self.dashboard_table):
+            key_col = 2 if table.columnCount() == 5 else 1
             for row in range(table.rowCount()):
-                item = table.item(row, 1)
+                item = table.item(row, key_col)
                 if item and item.data(Qt.UserRole) == rec.request_id:
-                    table.item(row, 0).setText(rec.method); table.item(row, 2).setText(str(rec.status or "—")); table.item(row, 3).setText(str(rec.response_size)); table.item(row, 4).setText(rec.mime_type or "—"); table.item(row, 5).setText(f"{rec.duration_ms} ms")
+                    if table.columnCount() == 5:
+                        table.item(row, 0).setText(urllib.parse.urlsplit(rec.url).netloc or "—")
+                        table.item(row, 1).setText(rec.method)
+                        table.item(row, 2).setText(rec.url)
+                        table.item(row, 3).setText(str(rec.status or "—"))
+                        table.item(row, 4).setText(rec.mime_type or "—")
+                    else:
+                        table.item(row, 0).setText(rec.method)
+                        table.item(row, 2).setText(str(rec.status or "—"))
+                        table.item(row, 3).setText(str(rec.response_size))
+                        table.item(row, 4).setText(rec.mime_type or "—")
+                        table.item(row, 5).setText(f"{rec.duration_ms} ms")
                     break
 
     def show_record_at_row(self, row: int):
         if row < 0: return
-        item = self.proxy_table.item(row, 1); rid = item.data(Qt.UserRole) if item else None
+        table = self.proxy_table
+        item = table.item(row, 1); rid = item.data(Qt.UserRole) if item else None
         rec = self.record_by_request.get(rid)
         if rec:
             self.proxy_request.setPlainText(self.request_text(rec)); self.proxy_response.setPlainText(self.response_text(rec)); self.dashboard_request.setPlainText(self.request_text(rec)); self.dashboard_response.setPlainText(self.response_text(rec))
@@ -583,7 +673,8 @@ class MainWindow(QMainWindow):
         for table in (self.proxy_table, self.dashboard_table):
             row = table.currentRow()
             if row >= 0:
-                item = table.item(row, 1)
+                key_col = 2 if table.columnCount() == 5 else 1
+                item = table.item(row, key_col)
                 if item:
                     rec = self.record_by_request.get(item.data(Qt.UserRole))
                     if rec:
@@ -593,34 +684,127 @@ class MainWindow(QMainWindow):
     # ---------------------------------------------------------------- dashboard
     def page_dashboard(self) -> QWidget:
         w, l = self.page_frame("1. Live passive crawl from Proxy (all traffic)", "Dashboard • traffic-driven workflow")
-        top = self.card(1128, 86); tl = QHBoxLayout(top); tl.setContentsMargins(16, 12, 16, 12); tl.setSpacing(10)
-        tb = QVBoxLayout(); tb.addWidget(label("TARGET", 10, MUTED, True)); self.dashboard_target = QLineEdit(); self.dashboard_target.setPlaceholderText("https://target.example"); self.dashboard_target.setFixedWidth(540); tb.addWidget(self.dashboard_target); tl.addLayout(tb)
-        b = QPushButton("Open in capture"); b.setObjectName("primary"); b.setFixedWidth(140); b.clicked.connect(lambda: self.new_live_capture()); tl.addWidget(b); add_spacer(tl); self.dashboard_mode = label("Proxy (all traffic)", 11, GOLD2, True); tl.addWidget(self.dashboard_mode)
+        top = self.card(920, 70); tl = QHBoxLayout(top); tl.setContentsMargins(16, 12, 16, 12); tl.setSpacing(10)
+        tb = QVBoxLayout(); tb.addWidget(label("TARGET", 10, MUTED, True)); self.dashboard_target = QLineEdit(); self.dashboard_target.setPlaceholderText("https://target.example"); self.dashboard_target.setFixedWidth(420); tb.addWidget(self.dashboard_target); tl.addLayout(tb)
+        b = QPushButton("Open in capture"); b.setObjectName("primary"); b.setFixedWidth(135); b.clicked.connect(lambda: self.new_live_capture()); tl.addWidget(b); add_spacer(tl); self.dashboard_mode = label("Proxy (all traffic)", 11, GOLD2, True); tl.addWidget(self.dashboard_mode)
         l.addWidget(top)
 
         cols = QHBoxLayout(); cols.setSpacing(14)
-        left = self.card(560, 650); lv = QVBoxLayout(left); lv.setContentsMargins(18, 16, 18, 16); lv.addWidget(label("Items added to site map", 13, TEXT, True)); self.dashboard_table = self.make_traffic_table(); self.dashboard_table.itemSelectionChanged.connect(lambda: self.show_dashboard_row()); lv.addWidget(self.dashboard_table, 1)
-        dash_detail = QSplitter(Qt.Horizontal); dash_detail.setFixedHeight(180); self.dashboard_request = QPlainTextEdit(); self.dashboard_request.setReadOnly(True); self.dashboard_response = QPlainTextEdit(); self.dashboard_response.setReadOnly(True); dash_detail.addWidget(self.dashboard_request); dash_detail.addWidget(self.dashboard_response); dash_detail.setSizes([270,270]); lv.addWidget(dash_detail)
-        right = QVBoxLayout(); cfg = self.card(554, 220); cl = QVBoxLayout(cfg); cl.setContentsMargins(18, 16, 18, 16); cl.addWidget(label("Task configuration", 13, TEXT, True)); cl.addWidget(label("Task type:   Live passive crawl", 11, TEXT2)); cl.addWidget(label("Scope:       Proxy (all traffic)", 11, TEXT2)); cl.addWidget(label("Configuration: Add links / same-domain traffic / suite scope.", 11, TEXT2)); stop = QPushButton("Stop capture"); stop.setObjectName("danger"); stop.clicked.connect(lambda: self.stop_capture(True)); cl.addWidget(stop, 0, Qt.AlignLeft); right.addWidget(cfg)
-        prog = self.card(554, 190); pl = QVBoxLayout(prog); pl.setContentsMargins(18, 16, 18, 16); pl.addWidget(label("Task progress", 13, TEXT, True)); self.dashboard_progress = label("Site map items added: 0\nResponses processed: 0\nResponses queued: 0", 11, TEXT2); pl.addWidget(self.dashboard_progress); right.addWidget(prog)
-        log = self.card(554, 220); ll = QVBoxLayout(log); ll.setContentsMargins(18, 16, 18, 16); ll.addWidget(label("Task log", 13, TEXT, True)); self.dashboard_log = QPlainTextEdit(); self.dashboard_log.setReadOnly(True); ll.addWidget(self.dashboard_log); right.addWidget(log)
-        cols.addWidget(left); rw = QWidget(); rw.setFixedWidth(554); rw.setLayout(right); cols.addWidget(rw); l.addLayout(cols); return w
+        left = self.card(452, 448); lv = QVBoxLayout(left); lv.setContentsMargins(18, 16, 18, 16); lv.addWidget(label("Items added to site map", 13, TEXT, True)); self.dashboard_table = self.make_traffic_table(compact=True); self.dashboard_table.itemSelectionChanged.connect(lambda: self.show_dashboard_row()); lv.addWidget(self.dashboard_table, 1)
+        dash_detail = QSplitter(Qt.Horizontal); dash_detail.setFixedHeight(120); self.dashboard_request = QPlainTextEdit(); self.dashboard_request.setReadOnly(True); self.dashboard_response = QPlainTextEdit(); self.dashboard_response.setReadOnly(True); dash_detail.addWidget(self.dashboard_request); dash_detail.addWidget(self.dashboard_response); dash_detail.setSizes([210,210]); lv.addWidget(dash_detail)
+        right = QVBoxLayout(); right.setSpacing(10); cfg = self.card(452, 145); cl = QVBoxLayout(cfg); cl.setContentsMargins(18, 16, 18, 16); cl.addWidget(label("Task configuration", 13, TEXT, True)); cl.addWidget(label("Task type:   Live passive crawl", 11, TEXT2)); cl.addWidget(label("Scope:       Proxy (all traffic)", 11, TEXT2)); cl.addWidget(label("Configuration: Add links / same-domain traffic / suite scope.", 11, TEXT2)); stop = QPushButton("Stop capture"); stop.setObjectName("danger"); stop.clicked.connect(lambda: self.stop_capture(True)); cl.addWidget(stop, 0, Qt.AlignLeft); right.addWidget(cfg)
+        prog = self.card(452, 125); pl = QVBoxLayout(prog); pl.setContentsMargins(18, 16, 18, 16); pl.addWidget(label("Task progress", 13, TEXT, True)); self.dashboard_progress = label("Site map items added: 0\nResponses processed: 0\nResponses queued: 0", 11, TEXT2); pl.addWidget(self.dashboard_progress); right.addWidget(prog)
+        log = self.card(452, 150); ll = QVBoxLayout(log); ll.setContentsMargins(18, 16, 18, 16); ll.addWidget(label("Task log", 13, TEXT, True)); self.dashboard_log = QPlainTextEdit(); self.dashboard_log.setReadOnly(True); ll.addWidget(self.dashboard_log); right.addWidget(log)
+        cols.addWidget(left); rw = QWidget(); rw.setFixedWidth(452); rw.setLayout(right); cols.addWidget(rw); l.addLayout(cols); return w
 
     def show_dashboard_row(self):
         row = self.dashboard_table.currentRow()
         if row < 0: return
-        item = self.dashboard_table.item(row, 1); rid = item.data(Qt.UserRole) if item else None; rec = self.record_by_request.get(rid)
+        item = self.dashboard_table.item(row, 2); rid = item.data(Qt.UserRole) if item else None; rec = self.record_by_request.get(rid)
         if rec:
             self.dashboard_request.setPlainText(self.request_text(rec)); self.dashboard_response.setPlainText(self.response_text(rec))
 
-    def make_traffic_table(self) -> QTableWidget:
-        t = QTableWidget(0, 6); t.setHorizontalHeaderLabels(["METHOD", "URL", "STATUS", "LENGTH", "MIME TYPE", "TIME"]); t.setSelectionBehavior(QAbstractItemView.SelectRows); t.setSelectionMode(QAbstractItemView.SingleSelection); t.setColumnWidth(0, 75); t.setColumnWidth(1, 280); t.setColumnWidth(2, 70); t.setColumnWidth(3, 80); t.setColumnWidth(4, 120); t.setColumnWidth(5, 80)
-        t.setContextMenuPolicy(Qt.CustomContextMenu); t.customContextMenuRequested.connect(lambda pos, table=t: self.traffic_context_menu(table, pos))
+    def make_traffic_table(self, compact: bool = False) -> QTableWidget:
+        if compact:
+            t = QTableWidget(0, 5)
+            t.setHorizontalHeaderLabels(["HOST", "METHOD", "URL", "STATUS", "MIME TYPE"])
+            widths = [88, 62, 165, 60, 88]
+        else:
+            t = QTableWidget(0, 6)
+            t.setHorizontalHeaderLabels(["METHOD", "URL", "STATUS", "LENGTH", "MIME TYPE", "TIME"])
+            widths = [75, 280, 70, 80, 120, 80]
+        t.setSelectionBehavior(QAbstractItemView.SelectRows)
+        t.setSelectionMode(QAbstractItemView.SingleSelection)
+        t.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff if compact else Qt.ScrollBarAsNeeded)
+        for i, width in enumerate(widths):
+            t.setColumnWidth(i, width)
+        t.setContextMenuPolicy(Qt.CustomContextMenu)
+        t.customContextMenuRequested.connect(lambda pos, table=t: self.traffic_context_menu(table, pos))
         return t
+
+    # -------------------------------------------------------------- workflow
+    def page_workflow(self) -> QWidget:
+        w, l = self.page_frame("Workflow", "Traffic-driven testing pipeline")
+
+        hero = self.card(1128, 120)
+        hv = QVBoxLayout(hero); hv.setContentsMargins(18, 16, 18, 16)
+        hv.addWidget(label("CAPTURE → INSPECT → REPLAY → ATTACK", 14, GOLD2, True))
+        hv.addWidget(label("Use Workflow as the traffic control center. Browser traffic lands in Proxy/History, then moves into Repeater, Intruder, Scanning, or analysis tools.", 11, TEXT2))
+        row = QHBoxLayout()
+        for text, target, primary in [
+            ("Open Proxy", "PROXY", True),
+            ("Open Repeater", "REPEATER", False),
+            ("Open Intruder", "INTRUDER", False),
+            ("Open Scanning", "TARGET", False),
+        ]:
+            btn = QPushButton(text); btn.setObjectName("primary" if primary else "nav"); btn.clicked.connect(lambda _, n=target: self.show_page(n)); row.addWidget(btn)
+        add_spacer(row); hv.addLayout(row); l.addWidget(hero)
+
+        grid = QHBoxLayout(); grid.setSpacing(14)
+        left = self.card(548, 500); lv = QVBoxLayout(left); lv.setContentsMargins(18, 16, 18, 16)
+        lv.addWidget(label("Workflow stages", 13, TEXT, True))
+        stages = [
+            ("01", "Capture", "Collect browser/application traffic through the capture workflow."),
+            ("02", "Inspect", "Select a request and inspect request/response details."),
+            ("03", "Replay", "Move interesting traffic into Repeater for controlled replay."),
+            ("04", "Attack", "Move a selected parameter into Intruder for payload testing."),
+            ("05", "Scan", "Run passive/controlled analysis from the Scanning module."),
+        ]
+        for num, title, desc in stages:
+            box = self.card(510, 72); bv = QVBoxLayout(box); bv.setContentsMargins(14, 10, 14, 10)
+            top = QHBoxLayout(); top.addWidget(label(num, 10, GOLD2, True)); top.addWidget(label(title, 12, TEXT, True)); add_spacer(top); bv.addLayout(top); bv.addWidget(label(desc, 10, TEXT2)); lv.addWidget(box)
+        lv.addStretch(1); grid.addWidget(left)
+
+        right = self.card(548, 500); rv = QVBoxLayout(right); rv.setContentsMargins(18, 16, 18, 16)
+        rv.addWidget(label("Current traffic state", 13, TEXT, True))
+        self.workflow_state = QPlainTextEdit(); self.workflow_state.setReadOnly(True); rv.addWidget(self.workflow_state, 1)
+        refresh = QPushButton("Refresh workflow state"); refresh.clicked.connect(self.refresh_workflow_state); rv.addWidget(refresh, 0, Qt.AlignLeft)
+        grid.addWidget(right); l.addLayout(grid); self.refresh_workflow_state(); return w
+
+    def refresh_workflow_state(self):
+        if not hasattr(self, "workflow_state"):
+            return
+        latest = self.records[-1] if self.records else None
+        payload = {
+            "captured_requests": len(self.records),
+            "scope_rules": [r.pattern for r in self.scope_rules],
+            "capture_running": bool(self.capture and self.capture.isRunning()),
+            "proxy_running": bool(self.local_proxy and self.local_proxy.isRunning()),
+            "latest_request": {
+                "method": latest.method, "url": latest.url, "status": latest.status
+            } if latest else None,
+        }
+        self.workflow_state.setPlainText(json.dumps(payload, indent=2, ensure_ascii=False))
+
+    # ---------------------------------------------------------- meta workflow
+    def page_meta_workflow_nc(self) -> QWidget:
+        w, l = self.page_frame("Meta Workflow NC", "Supporting analysis, correlation and utility tools")
+        intro = self.card(1128, 92); iv = QVBoxLayout(intro); iv.setContentsMargins(18, 14, 18, 14)
+        iv.addWidget(label("SECONDARY TOOLCHAIN", 13, GOLD2, True))
+        iv.addWidget(label("Supporting modules are grouped here to keep the primary navigation compact without removing any existing functionality.", 11, TEXT2))
+        l.addWidget(intro)
+
+        tools = [
+            ("Sequencer", "SEQUENCER", "Token sample and entropy inspection."),
+            ("Decoder", "DECODER", "Encode, decode, hash and JWT helpers."),
+            ("Comparer", "COMPARER", "Diff two requests, responses or text artifacts."),
+            ("Logger", "LOGGER", "Unified application event history."),
+            ("Organizer", "ORGANIZER", "Save and reuse interesting requests."),
+            ("Extensions", "EXTENSIONS", "Load local Python extensions."),
+            ("Discover", "DISCOVER", "Passive findings, forms, technologies and payload catalog."),
+        ]
+        grid = QGridLayout(); grid.setHorizontalSpacing(14); grid.setVerticalSpacing(14)
+        for i, (title, target, desc) in enumerate(tools):
+            card = self.card(360, 150); cv = QVBoxLayout(card); cv.setContentsMargins(16, 14, 16, 14)
+            cv.addWidget(label(title, 13, TEXT, True)); cv.addWidget(label(desc, 10, TEXT2)); add_spacer(cv)
+            btn = QPushButton(f"Open {title}"); btn.setObjectName("primary"); btn.clicked.connect(lambda _, n=target: self.show_page(n)); cv.addWidget(btn, 0, Qt.AlignLeft)
+            grid.addWidget(card, i // 3, i % 3)
+        grid_widget = QWidget(); grid_widget.setLayout(grid); l.addWidget(grid_widget); add_spacer(l)
+        return w
 
     # --------------------------------------------------------------- target
     def page_target(self) -> QWidget:
-        w, l = self.page_frame("Target", "Scope definition and site-map reconnaissance")
+        w, l = self.page_frame("Scanning", "Scope definition and site-map reconnaissance")
         row = QHBoxLayout(); scope = self.card(1128, 72); sl = QHBoxLayout(scope); sl.setContentsMargins(14, 12, 14, 12); sl.addWidget(label("SCOPE", 10, MUTED, True)); self.scope_input = QLineEdit("127.0.0.1"); self.scope_input.setFixedWidth(290); sl.addWidget(self.scope_input); add_btn = QPushButton("Add scope"); add_btn.clicked.connect(self.add_scope); sl.addWidget(add_btn); analyze = QPushButton("Analyze target"); analyze.setObjectName("primary"); analyze.clicked.connect(self.start_analysis); sl.addWidget(analyze); stop = QPushButton("Stop"); stop.clicked.connect(self.stop_analysis); sl.addWidget(stop); add_spacer(sl); sl.addWidget(label("Explicit targets only", 10, GOLD, True)); row.addWidget(scope); l.addLayout(row)
         grid = QHBoxLayout(); grid.setSpacing(14)
         site = self.card(700, 650); sv = QVBoxLayout(site); sv.setContentsMargins(16, 16, 16, 16); sv.addWidget(label("Site map", 13, TEXT, True)); self.site_tree = QTreeWidget(); self.site_tree.setHeaderLabels(["Host / URL", "Type"]); self.site_tree.itemDoubleClicked.connect(lambda item,_: self.send_site_item_to_repeater(item)); sv.addWidget(self.site_tree); grid.addWidget(site)
