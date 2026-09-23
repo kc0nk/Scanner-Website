@@ -9,11 +9,24 @@ import subprocess
 import tempfile
 import threading
 import time
+import queue
 from dataclasses import dataclass, field
 from urllib.request import urlopen
 
 import websocket
 from PySide6.QtCore import QThread, Signal
+
+
+@dataclass
+class InterceptedRequest:
+    paused_request_id: str
+    tab_id: str
+    request_id: str = ""
+    method: str = "GET"
+    url: str = ""
+    headers: dict[str, str] = field(default_factory=dict)
+    body: str = ""
+    resource_type: str = "Other"
 
 
 @dataclass
@@ -42,6 +55,7 @@ class ChromeCaptureThread(QThread):
 
     transaction = Signal(object)
     updated = Signal(object)
+    intercepted = Signal(object)
     error = Signal(str)
     state = Signal(str)
 
@@ -52,9 +66,31 @@ class ChromeCaptureThread(QThread):
         self._stop = threading.Event()
         self._initial_navigation_started = threading.Event()
         self._tab_threads: dict[str, threading.Thread] = {}
+        self._command_queues: dict[str, queue.Queue] = {}
+        self._intercept_enabled = False
+        self._state_lock = threading.RLock()
 
     def stop(self):
         self._stop.set()
+
+    def set_intercept(self, enabled: bool):
+        """Toggle CDP Fetch interception for all attached browser tabs."""
+        with self._state_lock:
+            self._intercept_enabled = bool(enabled)
+            queues = list(self._command_queues.values())
+        for q in queues:
+            q.put(("fetch_toggle", bool(enabled)))
+        self.state.emit("Intercept ON" if enabled else "Intercept OFF")
+
+    def forward(self, paused_request_id: str, tab_id: str):
+        q = self._command_queues.get(tab_id)
+        if q:
+            q.put(("forward", paused_request_id))
+
+    def drop(self, paused_request_id: str, tab_id: str):
+        q = self._command_queues.get(tab_id)
+        if q:
+            q.put(("drop", paused_request_id))
 
     def _json_get(self, path: str):
         with urlopen(f"http://127.0.0.1:{self.chrome_port}{path}", timeout=2) as r:
@@ -67,6 +103,7 @@ class ChromeCaptureThread(QThread):
     def _attach_tab(self, target_id: str, ws_url: str, navigate_initial: bool = False):
         records: dict[str, CapturedTransaction] = {}
         pending_body: dict[int, str] = {}
+        paused_request_ids: set[str] = set()
         extra_request_headers: dict[str, dict[str, str]] = {}
         extra_response_headers: dict[str, dict[str, str]] = {}
         counter = itertools.count(100)
@@ -85,6 +122,16 @@ class ChromeCaptureThread(QThread):
             ws.send(json.dumps({"id": 2, "method": "Network.setCacheDisabled", "params": {"cacheDisabled": True}}))
             ws.send(json.dumps({"id": 3, "method": "Network.setBypassServiceWorker", "params": {"bypass": True}}))
             ws.send(json.dumps({"id": 4, "method": "Page.enable"}))
+            command_queue = queue.Queue()
+            self._command_queues[target_id] = command_queue
+            with self._state_lock:
+                intercept_enabled = self._intercept_enabled
+            if intercept_enabled:
+                ws.send(json.dumps({
+                    "id": 6,
+                    "method": "Fetch.enable",
+                    "params": {"patterns": [{"urlPattern": "http://*/*", "requestStage": "Request"}, {"urlPattern": "https://*/*", "requestStage": "Request"}]},
+                }))
             # Only the first attached page is navigated to the requested target.
             # Additional tabs opened by the user must remain under their own URL.
             if navigate_initial and self.initial_url:
@@ -96,6 +143,38 @@ class ChromeCaptureThread(QThread):
             self.state.emit("Chrome network capture active")
 
             while not self._stop.is_set():
+                # Commands originate from the Qt GUI thread; websocket writes must
+                # stay inside this tab's socket-owning thread.
+                while True:
+                    try:
+                        command = command_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                    kind, value = command
+                    if kind == "fetch_toggle":
+                        if value:
+                            ws.send(json.dumps({
+                                "id": next(counter),
+                                "method": "Fetch.enable",
+                                "params": {"patterns": [{"urlPattern": "http://*/*", "requestStage": "Request"}, {"urlPattern": "https://*/*", "requestStage": "Request"}]},
+                            }))
+                        else:
+                            # Turning interception off should immediately release every
+                            # request that was waiting in the browser queue.
+                            for paused_id in list(paused_request_ids):
+                                ws.send(json.dumps({
+                                    "id": next(counter),
+                                    "method": "Fetch.continueRequest",
+                                    "params": {"requestId": paused_id},
+                                }))
+                            paused_request_ids.clear()
+                            ws.send(json.dumps({"id": next(counter), "method": "Fetch.disable"}))
+                    elif kind == "forward":
+                        ws.send(json.dumps({"id": next(counter), "method": "Fetch.continueRequest", "params": {"requestId": value}}))
+                        paused_request_ids.discard(value)
+                    elif kind == "drop":
+                        ws.send(json.dumps({"id": next(counter), "method": "Fetch.failRequest", "params": {"requestId": value, "errorReason": "BlockedByClient"}}))
+                        paused_request_ids.discard(value)
                 try:
                     raw = ws.recv()
                     if not raw:
@@ -127,6 +206,22 @@ class ChromeCaptureThread(QThread):
                 method = msg.get("method", "")
                 p = msg.get("params") or {}
                 request_id = p.get("requestId", "")
+
+                if method == "Fetch.requestPaused":
+                    request = p.get("request") or {}
+                    paused = InterceptedRequest(
+                        paused_request_id=str(p.get("requestId", "")),
+                        tab_id=target_id,
+                        request_id=str(p.get("networkId", "") or ""),
+                        method=str(request.get("method", "GET") or "GET"),
+                        url=str(request.get("url", "") or ""),
+                        headers={str(k): str(v) for k, v in (request.get("headers") or {}).items()},
+                        body=str(request.get("postData", "") or ""),
+                        resource_type=str(p.get("resourceType", "Other") or "Other"),
+                    )
+                    paused_request_ids.add(paused.paused_request_id)
+                    self.intercepted.emit(paused)
+                    continue
 
                 if method == "Network.requestWillBeSent":
                     req = p.get("request") or {}
@@ -212,6 +307,7 @@ class ChromeCaptureThread(QThread):
                     ws.close()
             except Exception:
                 pass
+            self._command_queues.pop(target_id, None)
 
     def _discover_loop(self):
         while not self._stop.is_set():

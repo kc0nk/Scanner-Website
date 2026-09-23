@@ -2,23 +2,33 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QPoint
-from PySide6.QtGui import QPixmap
+from PySide6.QtCore import Qt, QPoint, QUrl
+from PySide6.QtGui import QAction, QPixmap
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
     QGridLayout,
+    QDialog,
     QHBoxLayout,
     QLabel,
     QMainWindow,
     QPushButton,
     QScrollArea,
+    QTableWidget,
     QSizePolicy,
     QVBoxLayout,
+    QComboBox,
+    QListView,
+    QMenu,
+    QPlainTextEdit,
+    QSplitter,
     QWidget,
+    QStackedWidget,
 )
 
 from app.version import __version__
+from core.chrome_capture import ChromeCaptureThread, launch_chrome
 
 ROOT = Path(__file__).resolve().parents[1]
 LOGO = ROOT / "assets" / "kconk_logo.png"
@@ -110,6 +120,30 @@ QWidget#navBrand, QWidget#navRail {{
     background: transparent;
 }}
 
+QFrame#proxyPage, QFrame#proxyWorkspace, QFrame#proxyContent {{
+    background: {BG};
+    border: 0;
+}}
+QFrame#proxySubbar {{
+    background: {NAV_BG};
+    border: 0;
+}}
+QFrame#proxySubLine {{ background: {LINE}; border: 0; }}
+QFrame#proxyPanel {{
+    background: #081b14;
+    border: 1px solid #315944;
+    border-radius: 10px;
+}}
+QPushButton#proxySubItem, QPushButton#proxySubActive {{
+    background: transparent; border: 0; border-bottom: 2px solid transparent;
+    color: {TEXT_DIM}; padding: 0 14px; font-size: 11px; font-weight: 700;
+}}
+QPushButton#proxySubItem:hover {{ background: {NAV_BG_ACTIVE}; color: {TEXT}; }}
+QPushButton#proxySubActive {{ color: {GOLD_BRIGHT}; border-bottom: 2px solid {GOLD_BRIGHT}; background: {NAV_BG_ACTIVE}; }}
+QPushButton#proxyAction {{ background: {NAV_BG}; color: {TEXT}; border: 1px solid {LINE}; border-radius: 7px; padding: 0 14px; }}
+QPushButton#proxyAction:hover {{ background: {NAV_BG_ACTIVE}; color: {GOLD_BRIGHT}; border-color: {GOLD}; }}
+QTableWidget#proxyTable {{ background: #06110d; color: {TEXT}; border: 0; gridline-color: {LINE}; selection-background-color: {NAV_BG_ACTIVE}; }}
+QTableWidget#proxyTable QHeaderView::section {{ background: {NAV_BG_ACTIVE}; color: {TEXT_DIM}; border: 0; padding: 7px; font-size: 10px; font-weight: 700; }}
 QPushButton#navItem {{
     background: transparent;
     border: 0;
@@ -215,6 +249,19 @@ class NavRail(QWidget):
 
         self._update_width()
 
+    def set_order(self, order):
+        order = [name for name in order if name in self.buttons]
+        for name in self.order:
+            if name not in order:
+                order.append(name)
+        self.order = order
+        for name in self.order:
+            self.layout_.removeWidget(self.buttons[name])
+        for index, name in enumerate(self.order):
+            self.layout_.insertWidget(index, self.buttons[name])
+        self._update_width()
+        self._order_callback(self.order.copy())
+
     def _update_width(self):
         self.setFixedSize(sum(self.buttons[name].width() for name in self.order), NAVBAR_HEIGHT - 1)
 
@@ -273,6 +320,13 @@ class MainWindow(QMainWindow):
 
         self.active_nav = "DASHBOARD"
         self.nav_buttons: dict[str, QPushButton] = {}
+        self.chrome_process = None
+        self.chrome_profile = None
+        self.chrome_capture = None
+        self.proxy_records = {}
+        self.proxy_intercept_enabled = False
+        self.proxy_intercepted = {}
+        self.proxy_intercept_selected = None
 
         viewport = QScrollArea()
         viewport.setWidgetResizable(False)
@@ -289,16 +343,458 @@ class MainWindow(QMainWindow):
         root.addWidget(self.build_navbar())
         self.root_layout = root
 
-        # Dashboard: intentionally minimal. The first dashboard milestone is
-        # the KCONK project identity card; functional modules will be added later.
+        # Main module pages. Dashboard stays the landing page; Proxy gets its
+        # own secondary navigation bar underneath the primary navbar.
+        self.pages = QStackedWidget()
+        self.pages.setObjectName("modulePages")
+        self.pages.setFixedSize(DESIGN_WIDTH, DESIGN_HEIGHT - NAVBAR_HEIGHT)
+
         self.dashboard_page = self.build_dashboard()
-        root.addWidget(self.dashboard_page)
+        self.proxy_page = self.build_proxy()
+        self.pages.addWidget(self.dashboard_page)
+        self.pages.addWidget(self.proxy_page)
+        root.addWidget(self.pages)
 
         viewport.setWidget(canvas)
         self.setCentralWidget(viewport)
 
         self.refresh_nav_state()
 
+
+    def build_proxy(self) -> QFrame:
+        """Proxy workspace with a dedicated secondary navigation bar."""
+        page = QFrame()
+        page.setObjectName("proxyPage")
+        page.setFixedSize(DESIGN_WIDTH, DESIGN_HEIGHT - NAVBAR_HEIGHT)
+
+        outer = QVBoxLayout(page)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        subbar = QFrame()
+        subbar.setObjectName("proxySubbar")
+        subbar.setFixedHeight(48)
+        sub_layout = QHBoxLayout(subbar)
+        sub_layout.setContentsMargins(18, 0, 18, 0)
+        sub_layout.setSpacing(2)
+
+        self.proxy_sub_buttons = {}
+        for label in ("INTERCEPT", "HTTP HISTORY"):
+            btn = QPushButton(label)
+            btn.setObjectName("proxySubActive" if label == "INTERCEPT" else "proxySubItem")
+            btn.setFixedHeight(48)
+            btn.setMinimumWidth(128 if label == "INTERCEPT" else 150)
+            btn.setFocusPolicy(Qt.NoFocus)
+            btn.clicked.connect(lambda _=False, n=label: self.select_proxy_subtab(n))
+            self.proxy_sub_buttons[label] = btn
+            sub_layout.addWidget(btn)
+        sub_layout.addStretch(1)
+        outer.addWidget(subbar)
+
+        line = QFrame()
+        line.setObjectName("proxySubLine")
+        line.setFixedHeight(1)
+        outer.addWidget(line)
+
+        self.proxy_content = QStackedWidget()
+        self.proxy_content.setObjectName("proxyContent")
+        self.proxy_content.addWidget(self.build_proxy_intercept())
+        self.proxy_content.addWidget(self.build_proxy_history())
+        outer.addWidget(self.proxy_content)
+        self.proxy_subtab = "INTERCEPT"
+        return page
+
+    def build_proxy_intercept(self) -> QFrame:
+        page = QFrame()
+        page.setObjectName("proxyWorkspace")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(12)
+
+        header = QHBoxLayout()
+        title = QLabel("Intercept")
+        title.setStyleSheet(f"font-size:22px;font-weight:800;color:{GOLD_BRIGHT};")
+        header.addWidget(title)
+        header.addStretch(1)
+        self.proxy_intercept_status = QLabel("Intercept is off")
+        self.proxy_intercept_status.setStyleSheet(f"font-size:12px;color:{TEXT_DIM};")
+        header.addWidget(self.proxy_intercept_status)
+        layout.addLayout(header)
+
+        controls = QFrame()
+        controls.setObjectName("proxyPanel")
+        c = QHBoxLayout(controls)
+        c.setContentsMargins(14, 10, 14, 10)
+        c.setSpacing(8)
+
+        toggle = QPushButton("Intercept off")
+        toggle.setObjectName("proxyAction")
+        toggle.setFixedHeight(34)
+        toggle.setCheckable(True)
+        toggle.toggled.connect(self.set_proxy_intercept)
+        self.proxy_intercept_toggle = toggle
+        c.addWidget(toggle)
+
+        forward = QPushButton("Forward")
+        forward.setObjectName("proxyAction")
+        forward.setFixedHeight(34)
+        forward.clicked.connect(self.forward_selected_intercept)
+        self.proxy_forward_button = forward
+        c.addWidget(forward)
+
+        drop = QPushButton("Drop")
+        drop.setObjectName("proxyAction")
+        drop.setFixedHeight(34)
+        drop.clicked.connect(self.drop_selected_intercept)
+        self.proxy_drop_button = drop
+        c.addWidget(drop)
+        c.addStretch(1)
+        layout.addWidget(controls)
+
+        splitter = QSplitter(Qt.Vertical)
+        splitter.setChildrenCollapsible(False)
+        splitter.setHandleWidth(6)
+
+        queue_panel = QFrame()
+        queue_panel.setObjectName("proxyPanel")
+        ql = QVBoxLayout(queue_panel)
+        ql.setContentsMargins(12, 10, 12, 10)
+        qtitle = QLabel("Intercepted requests — waiting for Forward")
+        qtitle.setStyleSheet(f"font-size:13px;font-weight:800;color:{TEXT};")
+        ql.addWidget(qtitle)
+        table = QTableWidget(0, 4)
+        table.setObjectName("proxyTable")
+        table.setHorizontalHeaderLabels(["#", "METHOD", "URL", "TYPE"])
+        table.verticalHeader().setVisible(False)
+        table.setSelectionBehavior(QTableWidget.SelectRows)
+        table.setEditTriggers(QTableWidget.NoEditTriggers)
+        table.itemSelectionChanged.connect(self.show_intercept_selection)
+        ql.addWidget(table, 1)
+        self.proxy_intercept_table = table
+        splitter.addWidget(queue_panel)
+
+        editor_panel = QFrame()
+        editor_panel.setObjectName("proxyPanel")
+        el = QVBoxLayout(editor_panel)
+        el.setContentsMargins(12, 10, 12, 10)
+        editor_title = QLabel("Request waiting")
+        editor_title.setStyleSheet(f"font-size:13px;font-weight:800;color:{TEXT};")
+        el.addWidget(editor_title)
+        editor = QPlainTextEdit()
+        editor.setReadOnly(True)
+        editor.setLineWrapMode(QPlainTextEdit.NoWrap)
+        editor.setPlainText("No intercepted request. Turn Intercept on, then browse with the KCONK Chrome window.")
+        editor.setObjectName("proxyInspectorText")
+        self.proxy_intercept_editor = editor
+        el.addWidget(editor, 1)
+        splitter.addWidget(editor_panel)
+        splitter.setSizes([250, 220])
+        layout.addWidget(splitter, 1)
+        return page
+
+    def set_proxy_intercept(self, enabled: bool) -> None:
+        self.proxy_intercept_enabled = bool(enabled)
+        if hasattr(self, "proxy_intercept_toggle"):
+            self.proxy_intercept_toggle.setText("Intercept on" if enabled else "Intercept off")
+        if hasattr(self, "proxy_intercept_status"):
+            self.proxy_intercept_status.setText(
+                "Intercept is ON — browser requests will wait for Forward" if enabled
+                else "Intercept is off — browser traffic flows normally"
+            )
+        capture = getattr(self, "chrome_capture", None)
+        if capture is not None and capture.isRunning():
+            capture.set_intercept(enabled)
+
+    def _format_intercept_request(self, req) -> str:
+        lines = [f"{req.method} {req.url} HTTP/1.1"]
+        for key, value in req.headers.items():
+            lines.append(f"{key}: {value}")
+        if req.body:
+            lines.extend(["", req.body])
+        return "\n".join(lines)
+
+    def on_proxy_intercepted(self, req) -> None:
+        self.proxy_intercepted[req.paused_request_id] = req
+        table = getattr(self, "proxy_intercept_table", None)
+        if table is None:
+            return
+        from PySide6.QtWidgets import QTableWidgetItem
+        row = table.rowCount()
+        table.insertRow(row)
+        values = [str(row + 1), req.method, req.url, req.resource_type]
+        for col, value in enumerate(values):
+            item = QTableWidgetItem(value)
+            if col == 0:
+                item.setData(Qt.UserRole, req.paused_request_id)
+            table.setItem(row, col, item)
+        table.selectRow(row)
+        self.proxy_intercept_selected = req.paused_request_id
+        if hasattr(self, "proxy_intercept_editor"):
+            self.proxy_intercept_editor.setPlainText(self._format_intercept_request(req))
+        self.select_proxy_subtab("INTERCEPT")
+
+    def show_intercept_selection(self) -> None:
+        table = getattr(self, "proxy_intercept_table", None)
+        if table is None or not table.selectedItems():
+            return
+        item = table.item(table.currentRow(), 0)
+        if item is None:
+            return
+        paused_id = item.data(Qt.UserRole)
+        req = self.proxy_intercepted.get(paused_id)
+        if req is None:
+            return
+        self.proxy_intercept_selected = paused_id
+        if hasattr(self, "proxy_intercept_editor"):
+            self.proxy_intercept_editor.setPlainText(self._format_intercept_request(req))
+
+    def _remove_intercept_row(self, paused_id: str) -> None:
+        table = getattr(self, "proxy_intercept_table", None)
+        if table is None:
+            return
+        for row in range(table.rowCount()):
+            item = table.item(row, 0)
+            if item and item.data(Qt.UserRole) == paused_id:
+                table.removeRow(row)
+                break
+        for row in range(table.rowCount()):
+            item = table.item(row, 0)
+            if item:
+                item.setText(str(row + 1))
+
+    def forward_selected_intercept(self) -> None:
+        paused_id = self.proxy_intercept_selected
+        req = self.proxy_intercepted.get(paused_id) if paused_id else None
+        capture = getattr(self, "chrome_capture", None)
+        if req is None or capture is None or not capture.isRunning():
+            return
+        capture.forward(req.paused_request_id, req.tab_id)
+        self.proxy_intercepted.pop(paused_id, None)
+        self._remove_intercept_row(paused_id)
+        self.proxy_intercept_selected = None
+        if hasattr(self, "proxy_intercept_editor"):
+            self.proxy_intercept_editor.setPlainText("Request forwarded. Waiting for the browser response…")
+
+    def drop_selected_intercept(self) -> None:
+        paused_id = self.proxy_intercept_selected
+        req = self.proxy_intercepted.get(paused_id) if paused_id else None
+        capture = getattr(self, "chrome_capture", None)
+        if req is None or capture is None or not capture.isRunning():
+            return
+        capture.drop(req.paused_request_id, req.tab_id)
+        self.proxy_intercepted.pop(paused_id, None)
+        self._remove_intercept_row(paused_id)
+        self.proxy_intercept_selected = None
+        if hasattr(self, "proxy_intercept_editor"):
+            self.proxy_intercept_editor.setPlainText("Request dropped. The browser will receive a blocked response.")
+
+    def build_proxy_history(self) -> QFrame:
+        page = QFrame()
+        page.setObjectName("proxyWorkspace")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(14)
+
+        header = QHBoxLayout()
+        title = QLabel("HTTP history")
+        title.setStyleSheet(f"font-size:22px;font-weight:800;color:{GOLD_BRIGHT};")
+        header.addWidget(title)
+        header.addStretch(1)
+        filter_label = QLabel("Filter: All traffic")
+        filter_label.setStyleSheet(f"font-size:12px;color:{TEXT_DIM};")
+        header.addWidget(filter_label)
+        layout.addLayout(header)
+
+        table_frame = QFrame()
+        table_frame.setObjectName("proxyPanel")
+        tf = QVBoxLayout(table_frame)
+        tf.setContentsMargins(14, 14, 14, 14)
+        table = QTableWidget(0, 7)
+        table.setObjectName("proxyTable")
+        self.proxy_history_table = table
+        table.setHorizontalHeaderLabels(["#", "HOST", "METHOD", "URL", "STATUS", "LENGTH", "MIME TYPE"])
+        table.horizontalHeader().setStretchLastSection(True)
+        table.verticalHeader().setVisible(False)
+        table.setEditTriggers(QTableWidget.NoEditTriggers)
+        table.setSelectionBehavior(QTableWidget.SelectRows)
+        table.setAlternatingRowColors(False)
+        table.itemSelectionChanged.connect(self.show_proxy_history_selection)
+        tf.addWidget(table)
+
+        # Both the history area and the request/response inspector are resizable.
+        # The lower inspector is a real splitter so the user can drag the divider
+        # between Request and Response, matching the reference workflow.
+        inspector_splitter = QSplitter(Qt.Horizontal)
+        inspector_splitter.setObjectName("proxyInspectorSplitter")
+        inspector_splitter.setChildrenCollapsible(False)
+        inspector_splitter.setHandleWidth(6)
+
+        for title_text, empty_text in (
+            ("Request", "No request selected."),
+            ("Response", "No response available."),
+        ):
+            panel = QFrame()
+            panel.setObjectName("proxyPanel")
+            pl = QVBoxLayout(panel)
+            pl.setContentsMargins(12, 10, 12, 10)
+            lab = QLabel(title_text)
+            lab.setStyleSheet(f"font-size:14px;font-weight:800;color:{TEXT};")
+            body = QPlainTextEdit()
+            body.setReadOnly(True)
+            body.setPlainText(empty_text)
+            body.setObjectName("proxyInspectorText")
+            body.setLineWrapMode(QPlainTextEdit.NoWrap)
+            if title_text == "Request":
+                self.proxy_request_editor = body
+            else:
+                self.proxy_response_editor = body
+            pl.addWidget(lab)
+            pl.addWidget(body, 1)
+            inspector_splitter.addWidget(panel)
+
+        inspector_splitter.setStretchFactor(0, 1)
+        inspector_splitter.setStretchFactor(1, 1)
+        inspector_splitter.setSizes([430, 430])
+
+        content_splitter = QSplitter(Qt.Vertical)
+        content_splitter.setObjectName("proxyContentSplitter")
+        content_splitter.setChildrenCollapsible(False)
+        content_splitter.setHandleWidth(6)
+        content_splitter.addWidget(table_frame)
+        content_splitter.addWidget(inspector_splitter)
+        content_splitter.setStretchFactor(0, 3)
+        content_splitter.setStretchFactor(1, 2)
+        content_splitter.setSizes([330, 250])
+        layout.addWidget(content_splitter, 1)
+        return page
+
+    def open_chrome_capture(self) -> None:
+        """Launch Chrome and capture browser network activity into Proxy history."""
+        if self.chrome_capture is not None and self.chrome_capture.isRunning():
+            self.pages.setCurrentWidget(self.proxy_page)
+            self.select_proxy_subtab("HTTP HISTORY")
+            return
+        try:
+            self.chrome_process, chrome_port, self.chrome_profile = launch_chrome("about:blank")
+            self.chrome_capture = ChromeCaptureThread(chrome_port, "")
+            self.chrome_capture.transaction.connect(self.on_proxy_transaction)
+            self.chrome_capture.intercepted.connect(self.on_proxy_intercepted)
+            self.chrome_capture.updated.connect(self.on_proxy_transaction_updated)
+            self.chrome_capture.error.connect(self.on_proxy_capture_error)
+            self.chrome_capture.state.connect(self.on_proxy_capture_state)
+            self.chrome_capture.start()
+            if self.proxy_intercept_enabled:
+                # Apply the requested intercept mode as soon as the capture thread
+                # has started; newly attached tabs inherit the same state.
+                self.chrome_capture.set_intercept(True)
+            self.pages.setCurrentWidget(self.proxy_page)
+            self.select_proxy_subtab("HTTP HISTORY")
+        except Exception as exc:
+            self.on_proxy_capture_error(str(exc))
+
+    def on_proxy_capture_state(self, message: str) -> None:
+        self.proxy_capture_state = message
+
+    def on_proxy_capture_error(self, message: str) -> None:
+        self.proxy_capture_state = f"Capture error: {message}"
+
+    def _is_browser_url(self, url: str) -> bool:
+        return bool(url) and (url.startswith("http://") or url.startswith("https://"))
+
+    def on_proxy_transaction(self, record) -> None:
+        if not self._is_browser_url(record.url):
+            return
+        self.proxy_records[record.request_id] = record
+        self._insert_proxy_history_row(record)
+
+    def on_proxy_transaction_updated(self, record) -> None:
+        if not self._is_browser_url(record.url):
+            return
+        self.proxy_records[record.request_id] = record
+        table = getattr(self, "proxy_history_table", None)
+        if table is None:
+            return
+        for row in range(table.rowCount()):
+            if table.item(row, 0) and table.item(row, 0).data(Qt.UserRole) == record.request_id:
+                values = [
+                    str(row + 1),
+                    self._url_host(record.url),
+                    record.method,
+                    record.url,
+                    str(record.status or "—"),
+                    str(record.response_size or "—"),
+                    record.mime_type or "—",
+                ]
+                for col, value in enumerate(values):
+                    item = table.item(row, col)
+                    if item is None:
+                        from PySide6.QtWidgets import QTableWidgetItem
+                        item = QTableWidgetItem()
+                        table.setItem(row, col, item)
+                    item.setText(value)
+                return
+
+    def _url_host(self, url: str) -> str:
+        try:
+            return url.split("//", 1)[1].split("/", 1)[0].split(":", 1)[0]
+        except Exception:
+            return url
+
+    def _insert_proxy_history_row(self, record) -> None:
+        from PySide6.QtWidgets import QTableWidgetItem
+        table = getattr(self, "proxy_history_table", None)
+        if table is None:
+            return
+        for row in range(table.rowCount()):
+            if table.item(row, 0) and table.item(row, 0).data(Qt.UserRole) == record.request_id:
+                return
+        row = table.rowCount()
+        table.insertRow(row)
+        values = [
+            str(row + 1), self._url_host(record.url), record.method, record.url,
+            str(record.status or "—"), str(record.response_size or "—"), record.mime_type or "—",
+        ]
+        for col, value in enumerate(values):
+            item = QTableWidgetItem(value)
+            if col == 0:
+                item.setData(Qt.UserRole, record.request_id)
+            table.setItem(row, col, item)
+        table.scrollToBottom()
+
+    def show_proxy_history_selection(self) -> None:
+        table = getattr(self, "proxy_history_table", None)
+        if table is None or not table.selectedItems():
+            return
+        row = table.currentRow()
+        item = table.item(row, 0)
+        if item is None:
+            return
+        record = self.proxy_records.get(item.data(Qt.UserRole))
+        if record is None:
+            return
+        request_lines = [f"{record.method} {record.url} HTTP/1.1"]
+        for key, value in record.request_headers.items():
+            request_lines.append(f"{key}: {value}")
+        if record.request_body:
+            request_lines.extend(["", record.request_body])
+        response_lines = [f"HTTP/1.1 {record.status} {record.status_text}".rstrip()]
+        for key, value in record.response_headers.items():
+            response_lines.append(f"{key}: {value}")
+        if record.response_body:
+            response_lines.extend(["", record.response_body])
+        if hasattr(self, "proxy_request_editor"):
+            self.proxy_request_editor.setPlainText("\n".join(request_lines))
+            self.proxy_response_editor.setPlainText("\n".join(response_lines))
+
+    def select_proxy_subtab(self, name: str) -> None:
+        self.proxy_subtab = name
+        index = 0 if name == "INTERCEPT" else 1
+        self.proxy_content.setCurrentIndex(index)
+        for label, button in self.proxy_sub_buttons.items():
+            button.setObjectName("proxySubActive" if label == name else "proxySubItem")
+            button.style().unpolish(button)
+            button.style().polish(button)
+            button.update()
 
     def build_dashboard(self) -> QFrame:
         page = QFrame()
@@ -388,6 +884,20 @@ class MainWindow(QMainWindow):
         layout.addStretch(1)
         return page
 
+    def closeEvent(self, event) -> None:
+        capture = getattr(self, "chrome_capture", None)
+        if capture is not None:
+            capture.stop()
+            if capture.isRunning():
+                capture.wait(1500)
+        proc = getattr(self, "chrome_process", None)
+        if proc is not None:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+        super().closeEvent(event)
+
     def build_navbar(self) -> QFrame:
         bar = QFrame()
         bar.setObjectName("navbar")
@@ -453,6 +963,14 @@ class MainWindow(QMainWindow):
         root.addStretch(1)
 
         # ---- Utilities --------------------------------------------------
+        web_btn = QPushButton("🌐")
+        web_btn.setObjectName("navUtility")
+        web_btn.setFixedSize(34, 34)
+        web_btn.setToolTip("Open Chrome and capture HTTP history")
+        web_btn.clicked.connect(self.open_chrome_capture)
+        root.addWidget(web_btn)
+        root.addSpacing(4)
+
         light_btn = QPushButton("☀")
         light_btn.setObjectName("navUtility")
         light_btn.setFixedSize(34, 34)
@@ -473,7 +991,7 @@ class MainWindow(QMainWindow):
         settings_btn.setObjectName("navUtility")
         settings_btn.setFixedSize(34, 34)
         settings_btn.setToolTip("Settings")
-        settings_btn.clicked.connect(self.show_settings_notice)
+        settings_btn.clicked.connect(self.open_settings_window)
         root.addWidget(settings_btn)
         root.addSpacing(4)
 
@@ -487,7 +1005,7 @@ class MainWindow(QMainWindow):
         return bar
 
     def set_theme(self, theme: str) -> None:
-        """Switch the application palette without changing the fixed geometry."""
+        """Switch theme without breaking the stacked page geometry."""
         global BG, NAV_BG, NAV_BG_ACTIVE, LINE, LINE_HOVER, TEXT, TEXT_DIM, GOLD, GOLD_BRIGHT, GREEN, STYLE
         if theme == "light":
             BG = "#f2f1eb"
@@ -500,6 +1018,7 @@ class MainWindow(QMainWindow):
             GOLD = "#9a7425"
             GOLD_BRIGHT = "#b88628"
             GREEN = "#52715e"
+            card_bg, card_line, table_bg = "#ffffff", "#b8b39f", "#fbfaf5"
         else:
             BG = "#06110d"
             NAV_BG = "#07130f"
@@ -511,38 +1030,268 @@ class MainWindow(QMainWindow):
             GOLD = "#d8b56a"
             GOLD_BRIGHT = "#f0d18b"
             GREEN = "#7fa888"
+            card_bg, card_line, table_bg = "#081b14", "#315944", "#06110d"
+
+        # Rebuild the stylesheet from the current palette. Do not hard-code dark
+        # surfaces into the light theme: every major surface follows the theme.
         STYLE = f"""
 QMainWindow, QWidget {{ background: {BG}; color: {TEXT}; font-family: 'DejaVu Sans'; }}
-QLabel {{ background: transparent; }}
+QLabel {{ background: transparent; color: {TEXT}; }}
 QScrollArea {{ border: 0; background: {BG}; }}
-QFrame#navbar {{ background: {NAV_BG}; border: 0; }}
-QWidget#navRow {{ background: {NAV_BG}; }}
-QFrame#navBottomLine {{ background: {LINE}; border: 0; }}
-QFrame#navDivider {{ background: {LINE}; }}
-QFrame#dashboardPage {{ background: {BG}; border: 0; }}
-QFrame#projectCard {{ background: #081b14; border: 1px solid #315944; border-radius: 18px; }}
-QFrame#cardDivider {{ background: #315944; border: 0; }}
+QScrollBar:vertical {{ width: 11px; background: {BG}; }}
+QScrollBar::handle:vertical {{ background: {LINE}; border-radius: 5px; min-height: 45px; }}
+QScrollBar:horizontal {{ height: 11px; background: {BG}; }}
+QScrollBar::handle:horizontal {{ background: {LINE}; border-radius: 5px; min-width: 45px; }}
+QFrame#navbar, QWidget#navRow, QFrame#proxySubbar {{ background: {NAV_BG}; border: 0; }}
+QFrame#navBottomLine, QFrame#navDivider, QFrame#proxySubLine {{ background: {LINE}; border: 0; }}
 QWidget#navBrand, QWidget#navRail {{ background: transparent; }}
-QPushButton#navItem {{ background: transparent; border: 0; border-bottom: 2px solid transparent; color: {TEXT_DIM}; padding: 0 4px; margin: 0; font-size: 11px; font-weight: 700; }}
+QFrame#dashboardPage, QFrame#proxyPage, QFrame#proxyWorkspace, QFrame#proxyContent {{ background: {BG}; border: 0; }}
+QFrame#projectCard, QFrame#proxyPanel {{ background: {card_bg}; border: 1px solid {card_line}; border-radius: 10px; }}
+QFrame#cardDivider {{ background: {LINE}; border: 0; }}
+QPushButton#navItem, QPushButton#navItemActive {{ background: transparent; border: 0; border-bottom: 2px solid transparent; color: {TEXT_DIM}; padding: 0 4px; font-size: 11px; font-weight: 700; }}
 QPushButton#navItem:hover {{ background: {NAV_BG_ACTIVE}; color: {TEXT}; }}
-QPushButton#navItemActive {{ background: {NAV_BG_ACTIVE}; border: 0; border-bottom: 2px solid {GOLD_BRIGHT}; color: {GOLD_BRIGHT}; padding: 0 4px; margin: 0; font-size: 11px; font-weight: 800; }}
-QPushButton#navUtility {{ background: transparent; border: 0; border-radius: 7px; color: {GOLD}; font-size: 16px; padding: 0; }}
+QPushButton#navItemActive {{ background: {NAV_BG_ACTIVE}; border-bottom-color: {GOLD_BRIGHT}; color: {GOLD_BRIGHT}; font-weight: 800; }}
+QPushButton#navUtility {{ background: transparent; border: 0; color: {GOLD}; font-size: 16px; }}
 QPushButton#navUtility:hover {{ background: {NAV_BG_ACTIVE}; color: {GOLD_BRIGHT}; }}
+QPushButton#proxySubItem, QPushButton#proxySubActive {{ background: transparent; border: 0; border-bottom: 2px solid transparent; color: {TEXT_DIM}; padding: 0 14px; font-size: 11px; font-weight: 700; }}
+QPushButton#proxySubItem:hover {{ background: {NAV_BG_ACTIVE}; color: {TEXT}; }}
+QPushButton#proxySubActive {{ color: {GOLD_BRIGHT}; border-bottom-color: {GOLD_BRIGHT}; background: {NAV_BG_ACTIVE}; }}
+QPushButton#proxyAction {{ background: {NAV_BG}; color: {TEXT}; border: 1px solid {LINE}; border-radius: 7px; padding: 0 14px; }}
+QPushButton#proxyAction:hover {{ background: {NAV_BG_ACTIVE}; color: {GOLD_BRIGHT}; border-color: {GOLD}; }}
+QTableWidget#proxyTable {{ background: {table_bg}; color: {TEXT}; border: 0; gridline-color: {LINE}; selection-background-color: {NAV_BG_ACTIVE}; }}
+QTableWidget#proxyTable QHeaderView::section {{ background: {NAV_BG_ACTIVE}; color: {TEXT_DIM}; border: 0; padding: 7px; font-size: 10px; font-weight: 700; }}
+QPlainTextEdit {{ background: {table_bg}; color: {TEXT}; border: 1px solid {LINE}; }}
 """
         self.setStyleSheet(STYLE)
-        # Rebuild only the Dashboard page so its inline text/card colors follow
-        # the selected theme; the navbar instance and its current order remain intact.
-        if hasattr(self, "root_layout") and hasattr(self, "dashboard_page"):
-            old_page = self.dashboard_page
-            self.root_layout.removeWidget(old_page)
-            old_page.deleteLater()
-            self.dashboard_page = self.build_dashboard()
-            self.root_layout.addWidget(self.dashboard_page)
+
+        # Replace the Dashboard inside QStackedWidget, not in the root layout.
+        # The previous implementation accidentally inserted it beside the stack,
+        # which is why switching to Light could scramble the whole UI.
+        if hasattr(self, "pages") and hasattr(self, "dashboard_page"):
+            index = self.pages.indexOf(self.dashboard_page)
+            current_page = self.pages.currentWidget()
+            if index >= 0:
+                old_page = self.dashboard_page
+                self.pages.removeWidget(old_page)
+                old_page.deleteLater()
+                self.dashboard_page = self.build_dashboard()
+                self.pages.insertWidget(index, self.dashboard_page)
+                # Preserve whichever primary module was open before the theme change.
+                if current_page is self.proxy_page:
+                    self.pages.setCurrentWidget(self.proxy_page)
+                else:
+                    self.pages.setCurrentWidget(self.dashboard_page)
         self.refresh_nav_state()
 
-    def show_settings_notice(self) -> None:
-        # Settings is intentionally a harmless UI affordance for now.
-        self.statusBar().showMessage("Settings panel will be added in a later module.", 2500)
+    def open_settings_window(self) -> None:
+        """Open Settings as a dedicated child window."""
+        if getattr(self, "settings_window", None) is not None and self.settings_window.isVisible():
+            self.settings_window.raise_()
+            self.settings_window.activateWindow()
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("KCONK Suite — Settings")
+        dialog.setObjectName("settingsWindow")
+        dialog.setFixedSize(620, 470)
+        dialog.setModal(False)
+        dialog.setAttribute(Qt.WA_DeleteOnClose, True)
+        self.settings_window = dialog
+
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(28, 24, 28, 24)
+        layout.setSpacing(16)
+
+        heading = QLabel("Settings")
+        heading.setStyleSheet(f"font-size:24px;font-weight:800;color:{GOLD_BRIGHT};")
+        layout.addWidget(heading)
+
+        subtitle = QLabel("Configure the KCONK Suite interface and workspace.")
+        subtitle.setStyleSheet(f"font-size:12px;color:{TEXT_DIM};")
+        layout.addWidget(subtitle)
+
+        appearance = QFrame()
+        appearance.setObjectName("settingsSection")
+        appearance_layout = QGridLayout(appearance)
+        appearance_layout.setContentsMargins(18, 16, 18, 16)
+        appearance_layout.setHorizontalSpacing(18)
+        appearance_layout.setVerticalSpacing(14)
+
+        section_title = QLabel("Appearance")
+        section_title.setStyleSheet(f"font-size:15px;font-weight:800;color:{TEXT};")
+        appearance_layout.addWidget(section_title, 0, 0, 1, 2)
+
+        theme_label = QLabel("Theme")
+        theme_label.setStyleSheet(f"color:{TEXT};font-size:13px;")
+
+        # Use a styled QMenu instead of the platform QComboBox popup.
+        # The native popup frame can add compositor/desktop-specific white
+        # strips above and below the list even when the application is dark.
+        theme_button = QPushButton("Dark  ▾")
+        theme_button.setFixedHeight(36)
+        theme_button.setStyleSheet(f"""
+            QPushButton {{
+                background: {NAV_BG};
+                color: {TEXT};
+                border: 1px solid {LINE};
+                border-radius: 8px;
+                text-align: left;
+                padding: 0 12px;
+                font-size: 13px;
+            }}
+            QPushButton:hover {{
+                border-color: {GOLD};
+                color: {GOLD_BRIGHT};
+            }}
+        """)
+
+        theme_menu = QMenu(theme_button)
+        theme_menu.setWindowFlag(Qt.FramelessWindowHint, True)
+        theme_menu.setAttribute(Qt.WA_TranslucentBackground, False)
+
+        def refresh_theme_menu():
+            menu_bg = NAV_BG
+            menu_fg = TEXT
+            menu_hover = NAV_BG_ACTIVE
+            menu_style = f"""
+                QMenu {{
+                    background: {menu_bg};
+                    color: {menu_fg};
+                    border: 1px solid {LINE};
+                    padding: 4px;
+                }}
+                QMenu::item {{
+                    background: transparent;
+                    color: {menu_fg};
+                    padding: 8px 18px;
+                    min-width: 100px;
+                    border-radius: 5px;
+                }}
+                QMenu::item:selected {{
+                    background: {menu_hover};
+                    color: {GOLD_BRIGHT};
+                }}
+            """
+            theme_menu.setStyleSheet(menu_style)
+            theme_button.setText(("Light" if BG == "#f2f1eb" else "Dark") + "  ▾")
+
+        dark_action = QAction("Dark", theme_menu)
+        light_action = QAction("Light", theme_menu)
+        dark_action.triggered.connect(lambda: (self.set_theme("dark"), refresh_theme_menu()))
+        light_action.triggered.connect(lambda: (self.set_theme("light"), refresh_theme_menu()))
+        theme_menu.addAction(dark_action)
+        theme_menu.addAction(light_action)
+        refresh_theme_menu()
+        theme_button.clicked.connect(lambda: theme_menu.exec(theme_button.mapToGlobal(QPoint(0, theme_button.height()))))
+
+        appearance_layout.addWidget(theme_label, 1, 0)
+        appearance_layout.addWidget(theme_button, 1, 1)
+
+        nav_label = QLabel("Navigation order")
+        nav_label.setStyleSheet(f"color:{TEXT};font-size:13px;")
+        nav_value = QLabel("Drag navbar items directly to reorder them.")
+        nav_value.setWordWrap(True)
+        nav_value.setStyleSheet(f"color:{TEXT_DIM};font-size:12px;")
+        appearance_layout.addWidget(nav_label, 2, 0)
+        appearance_layout.addWidget(nav_value, 2, 1)
+
+        reset_nav = QPushButton("Reset navigation order")
+        reset_nav.clicked.connect(self.reset_nav_order)
+        appearance_layout.addWidget(reset_nav, 3, 1, Qt.AlignRight)
+
+        layout.addWidget(appearance)
+
+        about = QFrame()
+        about.setObjectName("settingsSection")
+        about_layout = QVBoxLayout(about)
+        about_layout.setContentsMargins(18, 16, 18, 16)
+        about_title = QLabel("About KCONK Suite")
+        about_title.setStyleSheet(f"font-size:15px;font-weight:800;color:{TEXT};")
+        about_layout.addWidget(about_title)
+        about_text = QLabel(f"Community Edition v{__version__}\nCreated by KCONK · Released 15 September 2025")
+        about_text.setStyleSheet(f"font-size:12px;color:{TEXT_DIM};line-height:1.4;")
+        about_layout.addWidget(about_text)
+        layout.addWidget(about)
+
+        layout.addStretch(1)
+
+        close_btn = QPushButton("Close")
+        close_btn.setFixedSize(100, 34)
+        close_btn.clicked.connect(dialog.close)
+        layout.addWidget(close_btn, 0, Qt.AlignRight)
+
+        dialog.setStyleSheet(f"""
+            QDialog#settingsWindow {{ background: {BG}; color: {TEXT}; }}
+            QDialog#settingsWindow QLabel {{ background: transparent; }}
+            QFrame#settingsSection {{ background: {NAV_BG_ACTIVE}; border: 1px solid {LINE}; border-radius: 12px; }}
+            QComboBox {{
+                background: {NAV_BG};
+                color: {TEXT};
+                border: 1px solid {LINE};
+                border-radius: 7px;
+                padding: 7px 10px;
+                min-width: 150px;
+                selection-background-color: {NAV_BG_ACTIVE};
+                selection-color: {TEXT};
+            }}
+            QComboBox::drop-down {{
+                border: 0;
+                width: 26px;
+            }}
+            QComboBox::down-arrow {{
+                width: 9px;
+                height: 9px;
+            }}
+            QComboBox QAbstractItemView {{
+                background: {NAV_BG};
+                color: {TEXT};
+                border: 0;
+                outline: 0;
+                padding: 0;
+                margin: 0;
+                selection-background-color: {NAV_BG_ACTIVE};
+                selection-color: {TEXT};
+            }}
+            QComboBox QAbstractItemView::item {{
+                background: {NAV_BG};
+                color: {TEXT};
+                border: 0;
+                padding: 7px 8px;
+                min-height: 22px;
+            }}
+            QComboBox QAbstractItemView::item:hover {{
+                background: {NAV_BG_ACTIVE};
+                color: {GOLD_BRIGHT};
+            }}
+            QComboBox QScrollBar:vertical {{
+                width: 8px;
+                background: {NAV_BG};
+                margin: 0;
+            }}
+            QComboBox QScrollBar::handle:vertical {{
+                background: {LINE_HOVER};
+                border-radius: 4px;
+                min-height: 20px;
+            }}
+            QComboBox QScrollBar::add-line:vertical,
+            QComboBox QScrollBar::sub-line:vertical {{
+                height: 0;
+                background: transparent;
+            }}
+            QPushButton {{ background: {NAV_BG}; color: {TEXT}; border: 1px solid {LINE}; border-radius: 7px; padding: 7px 12px; }}
+            QPushButton:hover {{ background: {NAV_BG_ACTIVE}; color: {GOLD_BRIGHT}; border-color: {GOLD}; }}
+        """)
+        dialog.finished.connect(lambda _result: setattr(self, "settings_window", None))
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def reset_nav_order(self) -> None:
+        """Restore the default eight-item navbar order."""
+        default_order = [name for name, _width in self.NAV_ITEMS]
+        if hasattr(self, "nav_rail"):
+            self.nav_rail.set_order(default_order)
+            self.refresh_nav_state()
 
     def nav_order_changed(self, order) -> None:
         """Keep the active state intact after a drag reorder."""
@@ -551,7 +1300,32 @@ QPushButton#navUtility:hover {{ background: {NAV_BG_ACTIVE}; color: {GOLD_BRIGHT
 
     def select_nav(self, name: str) -> None:
         self.active_nav = name
+        if hasattr(self, "pages"):
+            if name == "DASHBOARD":
+                self.pages.setCurrentWidget(self.dashboard_page)
+            elif name == "PROXY":
+                self.pages.setCurrentWidget(self.proxy_page)
+            else:
+                # Other modules remain intentionally blank while their UI is
+                # built one module at a time.
+                self.pages.setCurrentWidget(self.blank_module_page(name))
         self.refresh_nav_state()
+
+    def blank_module_page(self, name: str) -> QFrame:
+        if not hasattr(self, "_blank_pages"):
+            self._blank_pages = {}
+        if name not in self._blank_pages:
+            page = QFrame()
+            page.setObjectName("blankPage")
+            label = QLabel(name)
+            label.setAlignment(Qt.AlignCenter)
+            label.setStyleSheet(f"font-size:18px;font-weight:700;color:{TEXT_DIM};")
+            l = QVBoxLayout(page)
+            l.addWidget(label)
+            page.setFixedSize(DESIGN_WIDTH, DESIGN_HEIGHT - NAVBAR_HEIGHT)
+            self.pages.addWidget(page)
+            self._blank_pages[name] = page
+        return self._blank_pages[name]
 
     def refresh_nav_state(self) -> None:
         for name, button in self.nav_buttons.items():
