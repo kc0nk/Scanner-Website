@@ -72,7 +72,14 @@ QScrollBar::sub-line:horizontal {{ width: 0px; }}
 
 QFrame#navbar {{
     background: {NAV_BG};
-    border-bottom: 1px solid {LINE};
+    border: 0;
+}}
+QWidget#navRow {{
+    background: {NAV_BG};
+}}
+QFrame#navBottomLine {{
+    background: {LINE};
+    border: 0;
 }}
 QFrame#navDivider {{
     background: {LINE};
@@ -80,6 +87,9 @@ QFrame#navDivider {{
 QFrame#blankPage {{
     background: {BG};
     border: 0;
+}}
+QWidget#navBrand, QWidget#navRail {{
+    background: transparent;
 }}
 
 QPushButton#navItem {{
@@ -181,12 +191,23 @@ class MainWindow(QMainWindow):
         bar.setObjectName("navbar")
         bar.setFixedSize(DESIGN_WIDTH, NAVBAR_HEIGHT)
 
-        root = QHBoxLayout(bar)
+        # Build the navbar as a fixed content row plus an explicit 1px
+        # separator. Using a real child line avoids Qt stylesheet border
+        # painting being visually covered by the child widgets.
+        outer = QVBoxLayout(bar)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        row = QWidget()
+        row.setObjectName("navRow")
+        row.setFixedSize(DESIGN_WIDTH, NAVBAR_HEIGHT - 1)
+        root = QHBoxLayout(row)
         root.setContentsMargins(18, 0, 18, 0)
         root.setSpacing(0)
 
         # ---- Brand -------------------------------------------------------
         brand = QWidget()
+        brand.setObjectName("navBrand")
         brand.setFixedWidth(220)
         brand_layout = QHBoxLayout(brand)
         brand_layout.setContentsMargins(0, 0, 0, 0)
@@ -224,6 +245,7 @@ class MainWindow(QMainWindow):
         # Keep the eight modules in one fixed-width rail. This is easier to
         # reason about than relying on layout compression/stretching.
         nav_rail = QWidget()
+        nav_rail.setObjectName("navRail")
         nav_width = sum(width for _, width in self.NAV_ITEMS)
         nav_rail.setFixedSize(nav_width, NAVBAR_HEIGHT)
         nav_layout = QHBoxLayout(nav_rail)
@@ -251,6 +273,13 @@ class MainWindow(QMainWindow):
             btn.setToolTip(glyph)
             root.addWidget(btn)
             root.addSpacing(4)
+
+        outer.addWidget(row)
+
+        bottom_line = QFrame()
+        bottom_line.setObjectName("navBottomLine")
+        bottom_line.setFixedSize(DESIGN_WIDTH, 1)
+        outer.addWidget(bottom_line)
 
         return bar
 
